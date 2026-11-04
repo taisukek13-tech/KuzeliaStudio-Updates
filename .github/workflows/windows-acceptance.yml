@@ -5,7 +5,7 @@ on:
       release_tag:
         description: Public validation-kit release tag
         required: true
-        default: validation-v0.18.0-c2
+        default: validation-v0.18.0-c3
       version:
         description: App version
         required: true
@@ -13,15 +13,15 @@ on:
       archive_sha256:
         description: Exact signed runtime ZIP SHA-256
         required: true
-        default: ae4757d89bc078d72205d6aefa08dd68630cabd8170e131f26510e0178a326b8
+        default: 08ee58b2c4823b651cbd5338c04d24a96238c878f57b42c8985d0a2540e92cce
       core_sha256:
         description: Verified Core SHA-256
         required: true
-        default: 750557b77348b1ead28c3ffe6abd003c383680a8318d6a75deddc14d6f07836c
+        default: 8b4348b7b4acc8467857e651349f010147549f4145558ca5878b776766dac264
       kit_sha256:
         description: Public restoration kit SHA-256
         required: true
-        default: 2e27332cd75f950983998277ea49dc9530eb19740c2c0ba489698f2f9e64884c
+        default: 7bf5d945df5fb57f1eba7fb65f0d9c4a55f7c54c8d8f324793a2cb31f62f20fa
 permissions:
   contents: read
 jobs:
@@ -105,6 +105,7 @@ jobs:
           path: ${{ runner.temp }}/KuzeliaAcceptanceIncoming
           skip-decompress: true
       - name: Download and verify the official validation runtime
+        id: runtime
         shell: pwsh
         run: |
           $ErrorActionPreference='Stop'
@@ -134,6 +135,7 @@ jobs:
           Get-Content $path -Raw|Write-Output
           if($p.ExitCode -ne 0 -or -not $result.passed){throw 'Windows UI or encoding acceptance failed'}
       - name: Test new installation, repair and user-data preservation
+        if: ${{ !cancelled() && steps.runtime.outcome == 'success' }}
         shell: pwsh
         run: |
           $ErrorActionPreference='Stop'
