@@ -5,7 +5,7 @@ on:
       release_tag:
         description: Public validation-kit release tag
         required: true
-        default: validation-v0.18.0-c4
+        default: validation-v0.18.0-c5
       version:
         description: App version
         required: true
@@ -13,15 +13,15 @@ on:
       archive_sha256:
         description: Exact signed runtime ZIP SHA-256
         required: true
-        default: e3959a112275fb954a15647ce8da62b15ac40ed80d2573934f24509ce4011d1d
+        default: 04fccd602f15333ffa58aab6031af9d576fc867ad3daed0206aab4787a6ff211
       core_sha256:
         description: Verified Core SHA-256
         required: true
-        default: 8b4348b7b4acc8467857e651349f010147549f4145558ca5878b776766dac264
+        default: ac70f8b662a5ce8d98698e98db3f70dc18992e6b467d279c5f85c645bdd8860b
       kit_sha256:
         description: Public restoration kit SHA-256
         required: true
-        default: 1831394a20de6003f680a5a5515e27b2b4c319e60309fdf118d1e4d3755a5ff4
+        default: e336f18031f57214c19c009ec453c5950533b1075a320e6f70dd5b7f7cbb19bd
 permissions:
   contents: read
 jobs:
