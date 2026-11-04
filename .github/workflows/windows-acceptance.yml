@@ -1,0 +1,106 @@
+name: Windows acceptance
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Published validation release tag
+        required: true
+        default: validation-v0.18.0
+      version:
+        description: App version
+        required: true
+        default: 0.18.0
+      archive_sha256:
+        description: Verified signed runtime ZIP SHA-256
+        required: true
+        default: e16aaa8baa715c64854fd380b84db3ead3f2777228cb8cc6e25d74602cbfd32f
+      core_sha256:
+        description: Verified Core SHA-256
+        required: true
+        default: 6c1abc5e5e6c392e86da7d7e73c44c858f239dc81a3b43d3a9985d21970f5062
+      setup_sha256:
+        description: Optional setup SHA-256 to test installation, repair and owned-file uninstall
+        required: false
+        default: 4a5fe07e134d7d6867298a320396a19bdfe3d49e96f337185c675b4f6d6d67fe
+permissions:
+  contents: read
+jobs:
+  windows:
+    if: github.repository == 'taisukek13-tech/KuzeliaStudio-Updates' && github.event.repository.private == false
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      APP_VERSION: ${{ inputs.version }}
+      ZIP_SHA: ${{ inputs.archive_sha256 }}
+      CORE_SHA: ${{ inputs.core_sha256 }}
+      SETUP_SHA: ${{ inputs.setup_sha256 }}
+    steps:
+      - name: Download and verify the official validation runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:RELEASE_TAG -notmatch '^[A-Za-z0-9._-]+$' -or $env:APP_VERSION -notmatch '^\d+\.\d+\.\d+$' -or $env:ZIP_SHA -notmatch '^[a-f0-9]{64}$' -or $env:CORE_SHA -notmatch '^[a-f0-9]{64}$'){throw 'Invalid validation inputs'}
+          $base=Join-Path $env:RUNNER_TEMP 'KuzeliaAcceptance'
+          $reports=Join-Path $env:RUNNER_TEMP 'KuzeliaAcceptanceReports'
+          New-Item -ItemType Directory -Path $base,$reports -Force|Out-Null
+          $zip=Join-Path $base 'runtime.zip'
+          $url='https://github.com/'+$env:GITHUB_REPOSITORY+'/releases/download/'+$env:RELEASE_TAG+'/KuzeliaStudio_Update_v'+$env:APP_VERSION+'.zip'
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          if((Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:ZIP_SHA){throw 'Runtime ZIP digest mismatch'}
+          Expand-Archive -LiteralPath $zip -DestinationPath $base
+          $appRoot=Join-Path $base 'KuzeliaStudio'
+          if((Get-FileHash (Join-Path $appRoot 'Kuzelia.Core.dll') -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:CORE_SHA){throw 'Core digest mismatch'}
+          'APP_ROOT='+$appRoot|Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          'REPORT_ROOT='+$reports|Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          $hardware=@{os=[Environment]::OSVersion.VersionString;cpu=@(Get-CimInstance Win32_Processor|Select-Object Name,NumberOfCores,NumberOfLogicalProcessors);memoryBytes=(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory;graphics=@(Get-CimInstance Win32_VideoController|Select-Object Name,DriverVersion);authenticode=(Get-AuthenticodeSignature (Join-Path $appRoot 'KuzeliaStudio.exe')).Status.ToString();limits='Standard hosted Windows VM, not the user PC or RTX benchmark.'}
+          $hardware|ConvertTo-Json -Depth 8|Set-Content (Join-Path $reports 'hardware.json') -Encoding utf8
+      - name: Run isolated Windows UI and real 1080p encode checks
+        shell: pwsh
+        run: |
+          $app=Join-Path $env:APP_ROOT 'KuzeliaStudio.exe'
+          $argument='--self-test-output "'+$env:REPORT_ROOT+'"'
+          $p=Start-Process -FilePath $app -ArgumentList $argument -PassThru
+          if(-not $p.WaitForExit(900000)){Stop-Process -Id $p.Id -Force;throw 'UI test exceeded 15 minutes'}
+          $path=Join-Path $env:REPORT_ROOT 'ui-acceptance.json'
+          if(-not (Test-Path $path)){throw 'App did not write a completion report'}
+          $result=Get-Content $path -Raw|ConvertFrom-Json
+          Get-Content $path -Raw|Write-Output
+          if($p.ExitCode -ne 0 -or -not $result.passed){throw 'Windows UI or encoding acceptance failed'}
+      - name: Test new installation, repair and user-data preservation
+        if: inputs.setup_sha256 != ''
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:SETUP_SHA -notmatch '^[a-f0-9]{64}$'){throw 'Invalid setup SHA-256'}
+          $setup=Join-Path $env:RUNNER_TEMP 'KuzeliaSetup.exe'
+          Invoke-WebRequest -Uri ('https://github.com/'+$env:GITHUB_REPOSITORY+'/releases/download/'+$env:RELEASE_TAG+'/KuzeliaStudio_Setup_v'+$env:APP_VERSION+'.exe') -OutFile $setup
+          if((Get-FileHash $setup -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:SETUP_SHA){throw 'Setup digest mismatch'}
+          $target=Join-Path $env:RUNNER_TEMP 'KuzeliaInstallTest'
+          $normal=Join-Path $env:LOCALAPPDATA 'KuzeliaStudio.Native'
+          New-Item -ItemType Directory -Path $normal -Force|Out-Null
+          $sentinel=Join-Path $normal 'ci-user-data.txt'
+          [IO.File]::WriteAllText($sentinel,'USER-DATA-KEEP')
+          function Install { $p=Start-Process -FilePath $setup -ArgumentList @('/S',('/D='+$target)) -PassThru -Wait;if($p.ExitCode -ne 0){throw 'Setup did not complete'} }
+          Install
+          [IO.File]::WriteAllText((Join-Path $target 'my-recording.mp4'),'SOURCE-KEEP')
+          New-Item -ItemType Directory -Path (Join-Path $target 'my-fonts') -Force|Out-Null
+          [IO.File]::WriteAllText((Join-Path $target 'my-fonts\custom.ttf'),'FONT-KEEP')
+          Install
+          $envelope=Get-Content (Join-Path $env:APP_ROOT 'update-release.json') -Raw|ConvertFrom-Json
+          $manifest=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($envelope.payload))|ConvertFrom-Json
+          foreach($file in $manifest.files){$path=Join-Path $target $file.path;if(-not (Test-Path $path) -or (Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant() -ne $file.sha256){throw ('Installed file differs: '+$file.path)}}
+          $p=Start-Process -FilePath (Join-Path $target 'Uninstall.exe') -ArgumentList '/S' -PassThru -Wait
+          for($i=0;$i -lt 40 -and (Test-Path (Join-Path $target 'KuzeliaStudio.exe'));$i++){Start-Sleep -Milliseconds 250}
+          $preserved=([IO.File]::ReadAllText($sentinel) -eq 'USER-DATA-KEEP' -and [IO.File]::ReadAllText((Join-Path $target 'my-recording.mp4')) -eq 'SOURCE-KEEP' -and [IO.File]::ReadAllText((Join-Path $target 'my-fonts\custom.ttf')) -eq 'FONT-KEEP')
+          $gone=-not (Test-Path (Join-Path $target 'KuzeliaStudio.exe'))
+          @{installedInventoryVerified=$true;repairCompleted=$true;uninstallRemovedOwnedApp=$gone;sourceSettingsAndFontsPreserved=$preserved;limits='Ephemeral hosted Windows user, not antivirus or real in-app update/restart acceptance.'}|ConvertTo-Json|Tee-Object -FilePath (Join-Path $env:REPORT_ROOT 'installer-acceptance.json')
+          if(-not $preserved -or -not $gone){throw 'Installer user-data preservation failed'}
+      - name: Retain small acceptance reports and app-window captures
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: Kuzelia-Windows-Acceptance-${{ github.run_id }}
+          path: ${{ runner.temp }}/KuzeliaAcceptanceReports
+          retention-days: 1
+          if-no-files-found: warn
