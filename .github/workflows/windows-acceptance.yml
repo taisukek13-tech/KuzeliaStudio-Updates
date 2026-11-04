@@ -73,6 +73,7 @@ jobs:
           archive: false
           retention-days: 1
       - name: Retain signature, inventory and preparation record
+        continue-on-error: true
         if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -134,6 +135,70 @@ jobs:
           $result=Get-Content $path -Raw|ConvertFrom-Json
           Get-Content $path -Raw|Write-Output
           if($p.ExitCode -ne 0 -or -not $result.passed){throw 'Windows UI or encoding acceptance failed'}
+      - name: Exercise signed update helper from 0.17.0 and observe restart
+        if: ${{ !cancelled() && steps.runtime.outcome == 'success' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $report=@{fromVersion='0.17.0';toVersion=$env:APP_VERSION;passed=$false;uiButtonAndNetworkFlowExercised=$false;limits='Actual old signed helper, parent shutdown, file replacement and restarted window on an ephemeral Windows VM. User PC, update-button path, network and antivirus are separate.'}
+          $target=$null;$parent=$null;$runner=$null
+          try {
+            $base=Join-Path $env:RUNNER_TEMP 'KuzeliaUpdateRestart'
+            New-Item -ItemType Directory -Path $base -Force|Out-Null
+            $oldZip=Join-Path $base 'previous.zip'
+            Invoke-WebRequest -Uri 'https://github.com/taisukek13-tech/KuzeliaStudio-Updates/releases/download/v0.17.0/KuzeliaStudio_Update_v0.17.0.zip' -OutFile $oldZip
+            if((Get-FileHash $oldZip -Algorithm SHA256).Hash.ToLowerInvariant() -ne '1feec87b948b4ddfcc31d4405876ac05f84cc1ba41096d7bbbd927abf0fcb838'){throw 'Previous signed runtime ZIP differs'}
+            Expand-Archive -LiteralPath $oldZip -DestinationPath (Join-Path $base 'previous')
+            $target=Join-Path $base 'previous\KuzeliaStudio'
+            $targetExe=Join-Path $target 'KuzeliaStudio.exe'
+            $normal=Join-Path $env:LOCALAPPDATA 'KuzeliaStudio.Native'
+            $stage=Join-Path $normal ('Updates\'+[Guid]::NewGuid().ToString('N'))
+            $payload=Join-Path $stage 'payload';$helper=Join-Path $stage 'runner'
+            New-Item -ItemType Directory -Path $payload,$helper -Force|Out-Null
+            foreach($file in Get-ChildItem -LiteralPath $env:APP_ROOT){if($file.Name -ne 'update-release.json'){Copy-Item -LiteralPath $file.FullName -Destination $payload -Recurse}}
+            Copy-Item -LiteralPath (Join-Path $env:APP_ROOT 'update-release.json') -Destination $stage
+            foreach($file in Get-ChildItem -LiteralPath $target -File){if($file.Extension -in '.dll','.exe','.json'){Copy-Item -LiteralPath $file.FullName -Destination $helper}}
+            [IO.File]::WriteAllText((Join-Path $target 'my-recording.mp4'),'UPDATE-SOURCE-KEEP')
+            [IO.File]::WriteAllText((Join-Path $normal 'ci-update-user-data.txt'),'UPDATE-DATA-KEEP')
+            $parent=Start-Process -FilePath $targetExe -WorkingDirectory $target -PassThru
+            for($i=0;$i -lt 120;$i++){$parent.Refresh();if($parent.HasExited){throw 'Previous app exited before update'};if($parent.MainWindowHandle -ne 0){break};Start-Sleep -Milliseconds 500}
+            if($parent.MainWindowHandle -eq 0){throw 'Previous app window did not open'}
+            $job=Join-Path $stage 'job.json'
+            @{target=$target;stage=$stage;parentId=$parent.Id;parentStartedTicks=$parent.StartTime.ToUniversalTime().Ticks;restartMode='home'}|ConvertTo-Json|Set-Content -LiteralPath $job -Encoding utf8NoBOM
+            $runner=Start-Process -FilePath (Join-Path $helper 'KuzeliaStudio.exe') -WorkingDirectory $helper -ArgumentList ('--apply-update "'+$job+'"') -PassThru
+            for($i=0;$i -lt 120 -and -not (Test-Path (Join-Path $stage 'ready'));$i++){if($runner.HasExited){throw 'Update helper exited before ready'};Start-Sleep -Milliseconds 500}
+            if(-not (Test-Path (Join-Path $stage 'ready'))){throw 'Update helper did not become ready'}
+            if(-not $parent.CloseMainWindow() -or -not $parent.WaitForExit(20000)){throw 'Previous app did not close normally'}
+            $report.oldParentExited=$true
+            if(-not $runner.WaitForExit(120000) -or $runner.ExitCode -ne 0){throw 'Update helper did not finish normally'}
+            $report.helperExited=$true
+            $restarted=$null
+            for($i=0;$i -lt 120;$i++){
+              $restarted=Get-Process -Name KuzeliaStudio -ErrorAction SilentlyContinue|Where-Object {$_.Path -eq $targetExe -and $_.Id -ne $parent.Id}|Select-Object -First 1
+              if($null -ne $restarted){$restarted.Refresh();if($restarted.MainWindowHandle -ne 0){break}}
+              Start-Sleep -Milliseconds 500
+            }
+            if($null -eq $restarted -or $restarted.MainWindowHandle -eq 0){throw 'Updated app window did not restart'}
+            $report.restartedWindowPresent=$true
+            if((Get-FileHash (Join-Path $target 'Kuzelia.Core.dll') -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:CORE_SHA){throw 'Restarted app has another Core'}
+            $version=[Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $target 'KuzeliaStudio.dll')).FileVersion
+            if(-not $version.StartsWith($env:APP_VERSION+'.')){throw 'Restarted app version differs'}
+            $report.restartedFileVersion=$version
+            $envelope=Get-Content (Join-Path $target 'update-release.json') -Raw|ConvertFrom-Json
+            $manifest=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($envelope.payload))|ConvertFrom-Json
+            foreach($file in $manifest.files){if((Get-FileHash (Join-Path $target $file.path) -Algorithm SHA256).Hash.ToLowerInvariant() -ne $file.sha256){throw ('Updated inventory differs: '+$file.path)}}
+            $report.signedFilesVerified=$manifest.files.Count
+            if([IO.File]::ReadAllText((Join-Path $target 'my-recording.mp4')) -ne 'UPDATE-SOURCE-KEEP' -or [IO.File]::ReadAllText((Join-Path $normal 'ci-update-user-data.txt')) -ne 'UPDATE-DATA-KEEP'){throw 'Update changed user data'}
+            $report.unownedAndUserDataPreserved=$true
+            $pending=Get-ItemPropertyValue -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce' -Name KuzeliaStudioUpdate -ErrorAction SilentlyContinue
+            if($null -ne $pending){throw 'Update recovery RunOnce was not cleared'}
+            $report.recoveryRegistrationCleared=$true;$report.passed=$true
+          } catch {$report.error=$_.Exception.Message;throw}
+          finally {
+            if($null -ne $target){foreach($process in Get-Process -Name KuzeliaStudio -ErrorAction SilentlyContinue){if($process.Path -eq (Join-Path $target 'KuzeliaStudio.exe')){if(-not $process.CloseMainWindow() -or -not $process.WaitForExit(10000)){Stop-Process -Id $process.Id -Force}}}}
+            if($null -ne $runner -and -not $runner.HasExited){Stop-Process -Id $runner.Id -Force}
+            $report|ConvertTo-Json -Depth 8|Tee-Object -FilePath (Join-Path $env:REPORT_ROOT 'update-restart-acceptance.json')
+          }
       - name: Test new installation, repair and user-data preservation
         if: ${{ !cancelled() && steps.runtime.outcome == 'success' }}
         shell: pwsh
