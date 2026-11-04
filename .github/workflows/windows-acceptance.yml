@@ -190,7 +190,8 @@ jobs:
             $report.signedFilesVerified=$manifest.files.Count
             if([IO.File]::ReadAllText((Join-Path $target 'my-recording.mp4')) -ne 'UPDATE-SOURCE-KEEP' -or [IO.File]::ReadAllText((Join-Path $normal 'ci-update-user-data.txt')) -ne 'UPDATE-DATA-KEEP'){throw 'Update changed user data'}
             $report.unownedAndUserDataPreserved=$true
-            $pending=Get-ItemPropertyValue -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce' -Name KuzeliaStudioUpdate -ErrorAction SilentlyContinue
+            $pending=$null;$runOnce=[Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\RunOnce')
+            try {if($null -ne $runOnce){$pending=$runOnce.GetValue('KuzeliaStudioUpdate',$null)}} finally {if($null -ne $runOnce){$runOnce.Dispose()}}
             if($null -ne $pending){throw 'Update recovery RunOnce was not cleared'}
             $report.recoveryRegistrationCleared=$true;$report.passed=$true
           } catch {$report.error=$_.Exception.Message;throw}
