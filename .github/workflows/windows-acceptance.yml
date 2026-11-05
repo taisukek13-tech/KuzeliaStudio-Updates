@@ -5,7 +5,7 @@ on:
       release_tag:
         description: Public validation-kit release tag
         required: true
-        default: validation-v0.18.2-c2
+        default: validation-v0.18.2-c3
       version:
         description: App version
         required: true
@@ -13,15 +13,15 @@ on:
       archive_sha256:
         description: Exact signed runtime ZIP SHA-256
         required: true
-        default: 0477ee1bfb3e6907a4ecbfac3304d4550487cce58de8ac8d14bc02a019b768b6
+        default: 884a748be139b9c2daa33985707901927a27d82a1d81a5703e2bee8a0cffced3
       core_sha256:
         description: Verified Core SHA-256
         required: true
-        default: 01c201d43dff83de5d709d440a1816e6c4801f9c5cc2ecdff7b4e3bf9c97724f
+        default: 757e5aaf74d01df02f818887c18676c8ebc5b496fd8b13aa63028b1e40b0c3ed
       kit_sha256:
         description: Public restoration kit SHA-256
         required: true
-        default: e45429c397e5c9caa3f803bb2a3997d7bc84f03b1531cc02a1bc5ffd92d257a4
+        default: bde6b56ee2e99ff01c1d7b2f833c6c59177ec9249c54a47beab7a6b8bff09e23
 permissions:
   contents: read
 jobs:
@@ -135,6 +135,21 @@ jobs:
           $result=Get-Content $path -Raw|ConvertFrom-Json
           Get-Content $path -Raw|Write-Output
           if($p.ExitCode -ne 0 -or -not $result.passed){throw 'Windows UI or encoding acceptance failed'}
+      - name: Independently verify square pixels and portrait display ratio
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $probe=Join-Path $env:APP_ROOT 'Tools/ffprobe.exe'
+          $checks=@()
+          foreach($fps in @(30,60)){foreach($requested in @('cpu','nvidia')){
+            $movie=Join-Path $env:REPORT_ROOT "encode-$requested-$fps.mp4"
+            $raw=& $probe -v error -select_streams v:0 -show_entries stream=width,height,sample_aspect_ratio,display_aspect_ratio,avg_frame_rate -of json $movie|Out-String
+            if($LASTEXITCODE -ne 0){throw 'Independent aspect probe failed'}
+            $stream=($raw|ConvertFrom-Json).streams[0]
+            if($stream.width -ne 1080 -or $stream.height -ne 1920 -or $stream.sample_aspect_ratio -ne '1:1' -or $stream.display_aspect_ratio -ne '9:16' -or $stream.avg_frame_rate -ne "$fps/1"){throw "Wrong square-pixel portrait format: $raw"}
+            $checks+=@{requested=$requested;fps=$fps;stream=$stream}
+          }}
+          @{passed=$true;cases=$checks;scope='Four freshly encoded Windows app outputs; independent bundled ffprobe check. No real GPU available.'}|ConvertTo-Json -Depth 8|Tee-Object -FilePath (Join-Path $env:REPORT_ROOT 'pixel-aspect-acceptance.json')
       - name: Exercise signed update helper from 0.17.0 and observe restart
         if: ${{ !cancelled() && steps.runtime.outcome == 'success' }}
         shell: pwsh
