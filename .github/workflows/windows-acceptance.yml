@@ -33,6 +33,7 @@ jobs:
       setup_sha: ${{ steps.prepare.outputs.setup_sha }}
     env:
       RELEASE_TAG: ${{ inputs.release_tag }}
+      APP_VERSION: ${{ inputs.version }}
       KIT_SHA: ${{ inputs.kit_sha256 }}
       ZIP_SHA: ${{ inputs.archive_sha256 }}
       CORE_SHA: ${{ inputs.core_sha256 }}
@@ -46,10 +47,11 @@ jobs:
           from pathlib import Path
           for key in ['KIT_SHA','ZIP_SHA','CORE_SHA']:
               if not re.fullmatch('[a-f0-9]{64}',os.environ[key]):raise ValueError('Invalid validation digest')
-          tag=os.environ['RELEASE_TAG']
+          tag=os.environ['RELEASE_TAG'];version=os.environ['APP_VERSION']
+          if not re.fullmatch(r'\d{1,5}\.\d{1,5}\.\d{1,5}',version):raise ValueError('Invalid validation version')
           if not re.fullmatch('[A-Za-z0-9._-]+',tag):raise ValueError('Invalid validation tag')
           root=Path(os.environ['RUNNER_TEMP'])/'KuzeliaPrepared';root.mkdir();kit=root/'kit';kit.mkdir()
-          url='https://github.com/taisukek13-tech/KuzeliaStudio-Updates/releases/download/'+tag+'/KuzeliaStudio_WindowsValidationKit_v0.18.6.zip'
+          url='https://github.com/taisukek13-tech/KuzeliaStudio-Updates/releases/download/'+tag+'/KuzeliaStudio_WindowsValidationKit_v'+version+'.zip'
           with urllib.request.urlopen(url,timeout=180) as response:data=response.read(10*1024*1024+1)
           if len(data)>10*1024*1024 or hashlib.sha256(data).hexdigest()!=os.environ['KIT_SHA']:raise ValueError('Validation kit digest differs')
           path=root/'kit.zip';path.write_bytes(data)
@@ -57,19 +59,20 @@ jobs:
               if set(archive.namelist())!={'runtime-checkpoint.zip','restore.py','restore_and_build.py','kuzelia.ico','metadata.json','installer.nsi','public-key.txt'}:raise ValueError('Unexpected kit content')
               archive.extractall(kit)
           metadata=json.loads((kit/'metadata.json').read_text())
+          if metadata['version']!=version:raise ValueError('Kit version differs')
           if metadata['runtimeSha256']!=os.environ['ZIP_SHA'] or metadata['coreSha256']!=os.environ['CORE_SHA']:raise ValueError('Kit describes another candidate')
           subprocess.run([sys.executable,str(kit/'restore_and_build.py')],check=True)
           PYCODE
       - name: Retain exact runtime ZIP for Windows checks and publication
         uses: actions/upload-artifact@v7
         with:
-          path: ${{ runner.temp }}/KuzeliaPrepared/dist/KuzeliaStudio_Update_v0.18.6.zip
+          path: ${{ runner.temp }}/KuzeliaPrepared/dist/KuzeliaStudio_Update_v${{ inputs.version }}.zip
           archive: false
           retention-days: 1
       - name: Retain setup for Windows checks and publication
         uses: actions/upload-artifact@v7
         with:
-          path: ${{ runner.temp }}/KuzeliaPrepared/dist/KuzeliaStudio_Setup_v0.18.6.exe
+          path: ${{ runner.temp }}/KuzeliaPrepared/dist/KuzeliaStudio_Setup_v${{ inputs.version }}.exe
           archive: false
           retention-days: 1
       - name: Retain signature, inventory and preparation record
@@ -97,12 +100,12 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
-          name: KuzeliaStudio_Update_v0.18.6.zip
+          name: KuzeliaStudio_Update_v${{ inputs.version }}.zip
           path: ${{ runner.temp }}/KuzeliaAcceptanceIncoming
           skip-decompress: true
       - uses: actions/download-artifact@v8
         with:
-          name: KuzeliaStudio_Setup_v0.18.6.exe
+          name: KuzeliaStudio_Setup_v${{ inputs.version }}.exe
           path: ${{ runner.temp }}/KuzeliaAcceptanceIncoming
           skip-decompress: true
       - name: Download and verify the official validation runtime
@@ -114,7 +117,7 @@ jobs:
           $base=Join-Path $env:RUNNER_TEMP 'KuzeliaAcceptance'
           $reports=Join-Path $env:RUNNER_TEMP 'KuzeliaAcceptanceReports'
           New-Item -ItemType Directory -Path $base,$reports -Force|Out-Null
-          $zip=Join-Path $env:RUNNER_TEMP 'KuzeliaAcceptanceIncoming\KuzeliaStudio_Update_v0.18.6.zip'
+          $zip=Join-Path $env:RUNNER_TEMP ("KuzeliaAcceptanceIncoming\KuzeliaStudio_Update_v${env:APP_VERSION}.zip")
           if((Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:ZIP_SHA){throw 'Runtime ZIP digest mismatch'}
           Expand-Archive -LiteralPath $zip -DestinationPath $base
           $appRoot=Join-Path $base 'KuzeliaStudio'
@@ -135,6 +138,30 @@ jobs:
           $result=Get-Content $path -Raw|ConvertFrom-Json
           Get-Content $path -Raw|Write-Output
           if($p.ExitCode -ne 0 -or -not $result.passed){throw 'Windows UI or encoding acceptance failed'}
+      - name: Verify optional Japanese subtitle audit on Windows
+        if: inputs.version == '0.18.7'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue'
+          $root=Join-Path $env:RUNNER_TEMP 'KuzeliaJapaneseAudit'
+          $models=Join-Path $root 'models';New-Item -ItemType Directory -Path $models -Force|Out-Null
+          $source='https://huggingface.co/reazon-research/reazonspeech-k2-v2/resolve/291488c8151be24d7da4bf7af26e533fad96e407/'
+          $assets=@{
+            'encoder-epoch-99-avg-1.int8.onnx'='2c7bd08a8a99f9ddd0d9e458456577b1f6279214e51426f114f9eced44c54e1d'
+            'decoder-epoch-99-avg-1.int8.onnx'='8f0bff94d38797b03b762634ed03211a8e303d06cc4603cdd0cf4199d6eb1485'
+            'joiner-epoch-99-avg-1.int8.onnx'='49cc7ea1d3d35a40a27442db5e89996da64bf0e683a903dce76e99e57a12e4de'
+            'tokens.txt'='2c3ac659818a48a0c04010e0593bbc4d7c8a24a054340b01131499c05fd52def'
+          }
+          foreach($file in $assets.Keys){$dest=Join-Path $models $file;Invoke-WebRequest -Uri ($source+$file) -OutFile $dest;if((Get-FileHash $dest -Algorithm SHA256).Hash.ToLowerInvariant() -ne $assets[$file]){throw 'Japanese audit model digest differs'}}
+          $wav=Join-Path $root 'fixture.wav';$result=Join-Path $root 'readings.json';$job=Join-Path $root 'job.json'
+          & (Join-Path $env:APP_ROOT 'Tools/ffmpeg.exe') -v error -i (Join-Path $env:APP_ROOT 'Assets/Speech/japanese-test.wav') -t 7.5 -ac 1 -ar 16000 -c:a pcm_s16le $wav
+          if($LASTEXITCODE -ne 0){throw 'Japanese audit WAV preparation failed'}
+          @{modelFolder=$models;output=$result;threads=2;inputs=@($wav)}|ConvertTo-Json|Set-Content -LiteralPath $job -Encoding utf8NoBOM
+          & (Join-Path $env:APP_ROOT 'Tools/SpeechWorker/KuzeliaSpeech.exe') --ja-audit $job
+          if($LASTEXITCODE -ne 0){throw 'Japanese audit worker exited unsuccessfully'}
+          $reading=@(Get-Content $result -Raw|ConvertFrom-Json)
+          if($reading.Count -ne 1 -or [string]::IsNullOrWhiteSpace($reading[0].text) -or $reading[0].tokens.Count -eq 0 -or $reading[0].tokens.Count -ne $reading[0].timestamps.Count){throw 'Japanese audit worker output differs'}
+          @{passed=$true;modelAssets=$assets.Count;tokens=$reading[0].tokens.Count;scope='Bundled Japanese test audio with the optional native recognizer on Windows'}|ConvertTo-Json|Tee-Object -FilePath (Join-Path $env:REPORT_ROOT 'japanese-audit-acceptance.json')
       - name: Independently verify square pixels and portrait display ratio
         shell: pwsh
         run: |
@@ -150,19 +177,19 @@ jobs:
             $checks+=@{requested=$requested;fps=$fps;stream=$stream}
           }}
           @{passed=$true;cases=$checks;scope='Four freshly encoded Windows app outputs; independent bundled ffprobe check. No real GPU available.'}|ConvertTo-Json -Depth 8|Tee-Object -FilePath (Join-Path $env:REPORT_ROOT 'pixel-aspect-acceptance.json')
-      - name: Exercise signed update helper from 0.17.0 and observe restart
+      - name: Exercise signed update helper from 0.18.6 and observe restart
         if: ${{ !cancelled() && steps.runtime.outcome == 'success' }}
         shell: pwsh
         run: |
           $ErrorActionPreference='Stop'
-          $report=@{fromVersion='0.17.0';toVersion=$env:APP_VERSION;passed=$false;uiButtonAndNetworkFlowExercised=$false;limits='Actual old signed helper, parent shutdown, file replacement and restarted window on an ephemeral Windows VM. User PC, update-button path, network and antivirus are separate.'}
+          $report=@{fromVersion='0.18.6';toVersion=$env:APP_VERSION;passed=$false;uiButtonAndNetworkFlowExercised=$false;limits='Actual old signed helper, parent shutdown, file replacement and restarted window on an ephemeral Windows VM. User PC, update-button path, network and antivirus are separate.'}
           $target=$null;$parent=$null;$runner=$null
           try {
             $base=Join-Path $env:RUNNER_TEMP 'KuzeliaUpdateRestart'
             New-Item -ItemType Directory -Path $base -Force|Out-Null
             $oldZip=Join-Path $base 'previous.zip'
-            Invoke-WebRequest -Uri 'https://github.com/taisukek13-tech/KuzeliaStudio-Updates/releases/download/v0.17.0/KuzeliaStudio_Update_v0.17.0.zip' -OutFile $oldZip
-            if((Get-FileHash $oldZip -Algorithm SHA256).Hash.ToLowerInvariant() -ne '1feec87b948b4ddfcc31d4405876ac05f84cc1ba41096d7bbbd927abf0fcb838'){throw 'Previous signed runtime ZIP differs'}
+            Invoke-WebRequest -Uri 'https://github.com/taisukek13-tech/KuzeliaStudio-Updates/releases/download/v0.18.6/KuzeliaStudio_Update_v0.18.6.zip' -OutFile $oldZip
+            if((Get-FileHash $oldZip -Algorithm SHA256).Hash.ToLowerInvariant() -ne '6fa86013c55522ee290481c228b408d1f6c3f34f2d04bf3c4216a282f7c111c9'){throw 'Previous signed runtime ZIP differs'}
             Expand-Archive -LiteralPath $oldZip -DestinationPath (Join-Path $base 'previous')
             $target=Join-Path $base 'previous\KuzeliaStudio'
             $targetExe=Join-Path $target 'KuzeliaStudio.exe'
@@ -221,7 +248,7 @@ jobs:
         run: |
           $ErrorActionPreference='Stop'
           if($env:SETUP_SHA -notmatch '^[a-f0-9]{64}$'){throw 'Invalid setup SHA-256'}
-          $setup=Join-Path $env:RUNNER_TEMP 'KuzeliaAcceptanceIncoming\KuzeliaStudio_Setup_v0.18.6.exe'
+          $setup=Join-Path $env:RUNNER_TEMP ("KuzeliaAcceptanceIncoming\KuzeliaStudio_Setup_v${env:APP_VERSION}.exe")
           if((Get-FileHash $setup -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:SETUP_SHA){throw 'Setup digest mismatch'}
           $target=Join-Path $env:RUNNER_TEMP 'KuzeliaInstallTest'
           $normal=Join-Path $env:LOCALAPPDATA 'KuzeliaStudio.Native'
