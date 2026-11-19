@@ -1,4 +1,4 @@
-name: Windows performance measurement v0.20.9
+name: Windows performance measurement v0.20.10
 'on':
   push:
     branches:
@@ -12,14 +12,14 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 25
     env:
-      APP_VERSION: 0.20.9
-      ZIP_SHA: 91affd263a09f3efb5725a5b16a70467262fbbb51a070397e7a694ee9f1fc771
-      CORE_SHA: 6849e4cc37fbf48fa2de052c4e8342b8152aec263d3936142aa711443974cd52
+      APP_VERSION: 0.20.10
+      ZIP_SHA: 726bb33255223faca275e8381a624d8d9734809388baea0b3de71b85445ae32c
+      CORE_SHA: a616d17469d41d614d486612884df89effb3cd02200a5a648b33ab4c8720bff0
     steps:
     - name: Verify and expand the signed production runtime
       id: runtime
       shell: pwsh
-      run: "$ErrorActionPreference='Stop'\n$zip=Join-Path $env:RUNNER_TEMP 'KuzeliaStudio_Update_v0.20.9.zip'\nInvoke-WebRequest -Uri 'https://github.com/taisukek13-tech/KuzeliaStudio-Updates/releases/download/validation-v0.20.9-speed/KuzeliaStudio_Update_v0.20.9.zip'\
+      run: "$ErrorActionPreference='Stop'\n$zip=Join-Path $env:RUNNER_TEMP 'KuzeliaStudio_Update_v0.20.10.zip'\nInvoke-WebRequest -Uri 'https://github.com/taisukek13-tech/KuzeliaStudio-Updates/releases/download/validation-v0.20.10-design/KuzeliaStudio_Update_v0.20.10.zip'\
         \ -OutFile $zip\nif((Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:ZIP_SHA){throw 'Runtime ZIP digest mismatch'}\n$expanded=Join-Path $env:RUNNER_TEMP\
         \ 'KuzeliaMeasurementRuntime'\nExpand-Archive -LiteralPath $zip -DestinationPath $expanded\n$appRoot=Join-Path $expanded 'KuzeliaStudio'\nif((Get-FileHash (Join-Path $appRoot\
         \ 'Kuzelia.Core.dll') -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:CORE_SHA){throw 'Core digest mismatch'}\n$envelope=Get-Content (Join-Path $appRoot 'update-release.json')\
@@ -124,3 +124,4 @@ jobs:
         path: ${{ runner.temp }}/KuzeliaAcceptanceReports
         retention-days: 1
         if-no-files-found: warn
+
