@@ -5,7 +5,7 @@ on:
       release_tag:
         description: Public validation-kit release tag
         required: true
-        default: validation-v0.20.18-c1
+        default: validation-v0.20.18-c2
       version:
         description: App version
         required: true
@@ -21,7 +21,7 @@ on:
       kit_sha256:
         description: Public restoration kit SHA-256
         required: true
-        default: 88a09c765a13197d1ade78798806fa1c6b9d7fdccc028a0f777f3e03b0428ff2
+        default: 48a4c0371617b3b46b67c61072f5a035b8338e96d8bb32f920dd76bef840ac82
 permissions:
   contents: read
 jobs:
