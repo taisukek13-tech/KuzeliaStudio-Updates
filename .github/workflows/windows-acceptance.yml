@@ -1,418 +1,204 @@
 name: Windows acceptance
-'on':
+on:
   push:
-    branches:
-    - validation-v0.20.23-c2
-    paths:
-    - .github/workflows/windows-acceptance.yml
-  workflow_dispatch: {}
+    branches: [validation-v0.20.23-c2]
+    paths: ['.github/workflows/windows-acceptance.yml']
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  prepare:
-    if: github.repository == 'taisukek13-tech/KuzeliaStudio-Updates' && github.event.repository.private == false && github.ref == 'refs/heads/validation-v0.20.23-c2'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    outputs:
-      setup_sha: ${{ steps.prepare.outputs.setup_sha }}
-    env:
-      RELEASE_TAG: validation-v0.20.23-c2
-      ZIP_SHA: 8da148f191f792de09f37b606ac00b55587059c012103f3c2d0e0f6fcb019d20
-      CORE_SHA: a7406c7f6fc0e5ecf1bc11ccb660f986bf240d6c8f07063ee4601245bca15b8c
-      KIT_SHA: d9f703c0e3b2cf9b501bea4e194ac821ee8da85479ed1e167ac84bd8cd73341b
-      PROBE_SHA: 4ada045de4b6cdfba66c25df23b3f29fa9e45912e78ccf1594bd51209862bef2
-    steps:
-    - name: Restore exact signed runtime and compile owned-file installer
-      id: prepare
-      shell: bash
-      run: |
-        python3 - <<'PYCODE'
-        import hashlib,json,os,re,subprocess,sys,urllib.request,zipfile
-        from pathlib import Path
-        for key in ['KIT_SHA','ZIP_SHA','CORE_SHA']:
-            if not re.fullmatch('[a-f0-9]{64}',os.environ[key]):raise ValueError('Invalid validation digest')
-        tag=os.environ['RELEASE_TAG']
-        if not re.fullmatch('[A-Za-z0-9._-]+',tag):raise ValueError('Invalid validation tag')
-        root=Path(os.environ['RUNNER_TEMP'])/'KuzeliaPrepared';root.mkdir();kit=root/'kit';kit.mkdir()
-        url='https://github.com/taisukek13-tech/KuzeliaStudio-Updates/releases/download/'+tag+'/KuzeliaStudio_WindowsValidationKit_v0.20.23.zip'
-        with urllib.request.urlopen(url,timeout=180) as response:data=response.read(10*1024*1024+1)
-        if len(data)>10*1024*1024 or hashlib.sha256(data).hexdigest()!=os.environ['KIT_SHA']:raise ValueError('Validation kit digest differs')
-        path=root/'kit.zip';path.write_bytes(data)
-        with zipfile.ZipFile(path) as archive:
-            if set(archive.namelist())!={'runtime-checkpoint.zip','restore.py','restore_and_build.py','kuzelia.ico','metadata.json','installer.nsi','public-key.txt','qa-probes.zip'}:raise ValueError('Unexpected kit content')
-            archive.extractall(kit)
-        metadata=json.loads((kit/'metadata.json').read_text())
-        if metadata['runtimeSha256']!=os.environ['ZIP_SHA'] or metadata['coreSha256']!=os.environ['CORE_SHA']:raise ValueError('Kit describes another candidate')
-        if hashlib.sha256((kit/'qa-probes.zip').read_bytes()).hexdigest()!=os.environ['PROBE_SHA']:raise ValueError('Wrong diagnostics')
-        subprocess.run([sys.executable,str(kit/'restore_and_build.py')],check=True)
-        PYCODE
-    - name: Transfer pinned portable QA probes
-      uses: actions/upload-artifact@v7
-      with:
-        path: ${{ runner.temp }}/KuzeliaPrepared/kit/qa-probes.zip
-        archive: false
-        retention-days: 3
-    - name: Retain exact runtime ZIP for Windows checks and publication
-      uses: actions/upload-artifact@v7
-      with:
-        path: ${{ runner.temp }}/KuzeliaPrepared/dist/KuzeliaStudio_Update_v0.20.23.zip
-        archive: false
-        retention-days: 3
-    - name: Retain setup for Windows checks and publication
-      uses: actions/upload-artifact@v7
-      with:
-        path: ${{ runner.temp }}/KuzeliaPrepared/dist/KuzeliaStudio_Setup_v0.20.23.exe
-        archive: false
-        retention-days: 3
-    - name: Retain signature, inventory and preparation record
-      continue-on-error: true
-      if: always()
-      uses: actions/upload-artifact@v7
-      with:
-        name: Kuzelia-Prepared-Metadata-${{ github.run_id }}
-        path: |
-          ${{ runner.temp }}/KuzeliaPrepared/dist/prepared-artifacts.json
-          ${{ runner.temp }}/KuzeliaPrepared/dist/installer-build.log
-        retention-days: 3
-        if-no-files-found: warn
-  windows:
-    needs: prepare
+  live-windows:
     if: github.repository == 'taisukek13-tech/KuzeliaStudio-Updates' && github.event.repository.private == false && github.ref == 'refs/heads/validation-v0.20.23-c2'
     runs-on: windows-latest
-    timeout-minutes: 35
+    timeout-minutes: 8
     env:
-      RELEASE_TAG: validation-v0.20.23-c2
-      ZIP_SHA: 8da148f191f792de09f37b606ac00b55587059c012103f3c2d0e0f6fcb019d20
+      APP_VERSION: '0.20.23'
       CORE_SHA: a7406c7f6fc0e5ecf1bc11ccb660f986bf240d6c8f07063ee4601245bca15b8c
-      APP_VERSION: 0.20.23
-      BASE_ZIP_SHA: 257d5dc8c65650e8a59d06d683811241897eba92ac1b7901eb2f6cc773aaa710
-      BASE_CORE_SHA: f5e105011c1629df7aa9e9d258387961e1893900edfdf7a52b14723754d24ee6
-      PROBE_SHA: 4ada045de4b6cdfba66c25df23b3f29fa9e45912e78ccf1594bd51209862bef2
-      SETUP_SHA: ${{ needs.prepare.outputs.setup_sha }}
     steps:
-    - uses: actions/download-artifact@v8
-      with:
-        name: KuzeliaStudio_Update_v0.20.23.zip
-        path: ${{ runner.temp }}/KuzeliaAcceptanceIncoming
-        skip-decompress: true
-    - uses: actions/download-artifact@v8
-      with:
-        name: KuzeliaStudio_Setup_v0.20.23.exe
-        path: ${{ runner.temp }}/KuzeliaAcceptanceIncoming
-        skip-decompress: true
-    - uses: actions/download-artifact@v8
-      with:
-        name: qa-probes.zip
-        path: ${{ runner.temp }}/KuzeliaAcceptanceIncoming
-        skip-decompress: true
-    - name: Verify and extract the exact signed candidate
-      id: runtime
-      shell: pwsh
-      run: |
-        $ErrorActionPreference='Stop'
-        if($env:RELEASE_TAG -notmatch '^[A-Za-z0-9._-]+$' -or $env:APP_VERSION -notmatch '^\d+\.\d+\.\d+$' -or $env:ZIP_SHA -notmatch '^[a-f0-9]{64}$' -or $env:CORE_SHA -notmatch '^[a-f0-9]{64}$'){throw 'Invalid validation inputs'}
-        $base=Join-Path $env:RUNNER_TEMP 'KuzeliaAcceptance'
-        $reports=Join-Path $env:RUNNER_TEMP 'KuzeliaAcceptanceReports'
-        New-Item -ItemType Directory -Path $base,$reports -Force|Out-Null
-        $zip=Join-Path $env:RUNNER_TEMP 'KuzeliaAcceptanceIncoming\KuzeliaStudio_Update_v0.20.23.zip'
-        if((Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:ZIP_SHA){throw 'Runtime ZIP digest mismatch'}
-        [IO.Compression.ZipFile]::ExtractToDirectory($zip, $base)
-        $appRoot=Join-Path $base 'KuzeliaStudio'
-        if((Get-FileHash (Join-Path $appRoot 'Kuzelia.Core.dll') -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:CORE_SHA){throw 'Core digest mismatch'}
-        'APP_ROOT='+$appRoot|Out-File $env:GITHUB_ENV -Append -Encoding utf8
-        'REPORT_ROOT='+$reports|Out-File $env:GITHUB_ENV -Append -Encoding utf8
-        $hardware=@{os=[Environment]::OSVersion.VersionString;cpu=@(Get-CimInstance Win32_Processor|Select-Object Name,NumberOfCores,NumberOfLogicalProcessors);memoryBytes=(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory;graphics=@(Get-CimInstance Win32_VideoController|Select-Object Name,DriverVersion);authenticode=(Get-AuthenticodeSignature (Join-Path $appRoot 'KuzeliaStudio.exe')).Status.ToString();limits='Standard hosted Windows VM, not the user PC or RTX benchmark.'}
-        $hardware|ConvertTo-Json -Depth 8|Set-Content (Join-Path $reports 'hardware.json') -Encoding utf8
-    - name: Fetch and pin the official previous runtime once
-      id: baseline
-      shell: pwsh
-      run: |
-        $ErrorActionPreference = 'Stop'
-        $baseFolder = Join-Path $env:RUNNER_TEMP 'KuzeliaOfficialBaseline'
-        $null = New-Item -ItemType Directory -Path $baseFolder
-        $zip = Join-Path $baseFolder 'official-v22.zip'
-        & curl.exe --fail --silent --show-error --location --retry 3 --max-time 240 --output $zip 'https://github.com/taisukek13-tech/KuzeliaStudio-Updates/releases/download/v0.20.22/KuzeliaStudio_Update_v0.20.22.zip'
-        if ($LASTEXITCODE -ne 0) { throw 'Could not download the official v0.20.22 runtime' }
-        if ((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash -ne $env:BASE_ZIP_SHA) { throw 'Official baseline archive differs' }
-        [IO.Compression.ZipFile]::ExtractToDirectory($zip, $baseFolder)
-        $baseRoot = Join-Path $baseFolder 'KuzeliaStudio'
-        if ((Get-FileHash (Join-Path $baseRoot 'Kuzelia.Core.dll')).Hash -ne $env:BASE_CORE_SHA) { throw 'Official baseline Core differs' }
-        $baseVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $baseRoot 'KuzeliaStudio.dll')).FileVersion
-        if ($baseVersion -ne '0.20.22.0') { throw "Unexpected baseline version $baseVersion" }
-        "BASE_ROOT=$baseRoot" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-    - name: Compare physical splash, responsive home and idle on the same VM
-      shell: pwsh
-      timeout-minutes: 5
-      run: |
-        $ErrorActionPreference = 'Stop'
-        Add-Type -TypeDefinition @'
-        using System;
-        using System.Runtime.InteropServices;
-        public static class WindowResponse {
-            [StructLayout(LayoutKind.Sequential)]
-            public struct Rect { public int Left, Top, Right, Bottom; }
-            [DllImport("user32.dll")]
-            static extern bool GetClientRect(IntPtr hwnd, out Rect rectangle);
-            [DllImport("user32.dll", SetLastError=true)]
-            static extern IntPtr SendMessageTimeout(IntPtr hwnd, uint message, UIntPtr wp, IntPtr lp, uint flags, uint timeout, out UIntPtr result);
-            public static int Width(IntPtr hwnd) {
-                Rect rect;
-                return GetClientRect(hwnd, out rect) ? rect.Right - rect.Left : 0;
-            }
-            public static bool Ping(IntPtr hwnd) {
-                UIntPtr result;
-                return SendMessageTimeout(hwnd, 0, UIntPtr.Zero, IntPtr.Zero, 2, 350, out result) != IntPtr.Zero;
-            }
-        }
-        '@
-        function Measure-Home([string]$version, [string]$root, [int]$round) {
-            $clock = [Diagnostics.Stopwatch]::StartNew()
-            $proc = Start-Process -FilePath (Join-Path $root 'KuzeliaStudio.exe') -WorkingDirectory $root -PassThru
-            try {
-                $windowMs = $null
-                $interactiveMs = $null
-                while ($clock.Elapsed.TotalSeconds -lt 45) {
-                    $proc.Refresh()
-                    if ($proc.HasExited) { throw "Version $version exited before home on trial $round" }
-                    $hwnd = $proc.MainWindowHandle
-                    if ($hwnd -ne [IntPtr]::Zero) {
-                        if ($null -eq $windowMs) { $windowMs = $clock.Elapsed.TotalMilliseconds }
-                        if ([WindowResponse]::Width($hwnd) -ge 700 -and [WindowResponse]::Ping($hwnd)) {
-                            $interactiveMs = $clock.Elapsed.TotalMilliseconds
-                            break
-                        }
-                    }
-                    Start-Sleep -Milliseconds 20
-                }
-                if ($null -eq $interactiveMs) { throw "The normal home window for $version did not become usable" }
-                $working = @()
-                $delays = @()
-                $timeouts = 0
-                $proc.Refresh()
-                $before = $proc.TotalProcessorTime.TotalMilliseconds
-                $idle = [Diagnostics.Stopwatch]::StartNew()
-                while ($idle.Elapsed.TotalSeconds -lt 4) {
-                    Start-Sleep -Milliseconds 200
-                    $proc.Refresh()
-                    $working += $proc.WorkingSet64
-                    $ping = [Diagnostics.Stopwatch]::StartNew()
-                    if (-not [WindowResponse]::Ping($proc.MainWindowHandle)) { $timeouts++ }
-                    $delays += $ping.Elapsed.TotalMilliseconds
-                }
-                $proc.Refresh()
-                $cpu = $proc.TotalProcessorTime.TotalMilliseconds - $before
-                $ms = $idle.Elapsed.TotalMilliseconds
-                if ($timeouts -eq $delays.Count) { throw "Version $version did not respond during idle" }
-                return [ordered]@{
-                    version=$version; trial=$round; firstWindowMs=$windowMs; homeResponsiveMs=$interactiveMs
-                    idleMs=$ms; idleProcessCpuMs=$cpu; idleOneCorePercent=100*$cpu/$ms
-                    workingSetMeanBytes=($working | Measure-Object -Average).Average
-                    workingSetPeakBytes=($working | Measure-Object -Maximum).Maximum
-                    uiPingMaxMs=($delays | Measure-Object -Maximum).Maximum; uiPingTimeouts=$timeouts
-                    sampleCount=$working.Count
-                }
-            }
-            finally {
-                if (-not $proc.HasExited) {
-                    if (-not $proc.CloseMainWindow() -or -not $proc.WaitForExit(10000)) {
-                        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-                        $null = $proc.WaitForExit(5000)
-                    }
-                }
-                $proc.Dispose()
-            }
-        }
-        $roots = @{ '0.20.22' = $env:BASE_ROOT; '0.20.23' = $env:APP_ROOT }
-        $records = @()
-        $trials = @{}
-        foreach ($version in @('0.20.22','0.20.23','0.20.23','0.20.22','0.20.22','0.20.23')) {
-            $trials[$version] = [int]$trials[$version] + 1
-            $records += Measure-Home $version $roots[$version] $trials[$version]
-        }
-        [ordered]@{
-            conditions='Normal home launch, same interactive Windows VM and fresh CI profile. First HWND is the splash. Home is at least 700 client pixels wide and responds to WM_NULL. Four seconds of idle sampled every 200 ms before scheduled network checks. No other app instance. First launch per version and two subsequent warm launches are identified.'
-            observations=$records
-        } | ConvertTo-Json -Depth 6 | Tee-Object -FilePath (Join-Path $env:REPORT_ROOT 'home-performance.json')
-    - name: Use the .NET 10 SDK for the independent portable test probes
-      uses: actions/setup-dotnet@v5
-      with:
-        dotnet-version: 10.0.403
-    - name: Compare actual video preview, encode and signed update I/O on both versions
-      shell: pwsh
-      timeout-minutes: 10
-      run: |
-        $ErrorActionPreference = 'Stop'
-        $zip = Join-Path $env:RUNNER_TEMP 'KuzeliaAcceptanceIncoming/qa-probes.zip'
-        if ((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash -ne $env:PROBE_SHA) { throw 'Diagnostic probe binaries differ' }
-        $roots = @{ '0.20.22' = $env:BASE_ROOT; '0.20.23' = $env:APP_ROOT }
-        $hashes = @{ '0.20.22' = $env:BASE_CORE_SHA; '0.20.23' = $env:CORE_SHA }
-        $probeDirs = @{}
-        $worker = Join-Path $env:BASE_ROOT 'Tools/SpeechWorker/KuzeliaSpeech.exe'
-        $fixture = Join-Path $env:RUNNER_TEMP 'KuzeliaSyntheticUpdateFixture'
-        foreach ($version in @('0.20.22','0.20.23')) {
-            $where = Join-Path $env:RUNNER_TEMP "KuzeliaDiagnostic-$version"
-            [IO.Compression.ZipFile]::ExtractToDirectory($zip, $where)
-            Copy-Item (Join-Path $roots[$version] 'Kuzelia.Core.dll') $where
-            $probeDirs[$version] = $where
-        }
-        & dotnet (Join-Path $probeDirs['0.20.22'] 'Probe.dll') fixture $fixture
-        if ($LASTEXITCODE -ne 0) { throw 'Could not construct the common update fixture' }
-        $rounds = @{}
-        $all = @()
-        foreach ($version in @('0.20.22','0.20.23','0.20.23','0.20.22')) {
-            $trial = $rounds[$version] = [int]$rounds[$version] + 1
-            $work = Join-Path $env:RUNNER_TEMP "KuzeliaRender-$version-$trial"
-            $probe = $probeDirs[$version]
-            $update = & dotnet (Join-Path $probe 'Probe.dll') run $fixture
-            if ($LASTEXITCODE -ne 0) { throw "Signed update read probe failed on $version" }
-            $updateData = $update | ConvertFrom-Json
-            if ($updateData.version -ne '1.0.2' -or $updateData.read -le 0) { throw "Unexpected signed update fixture result on $version" }
-            & dotnet (Join-Path $probe 'PerformanceProbe.dll') $roots[$version] $work $worker
-            if ($LASTEXITCODE -ne 0) { throw "Actual video performance probe failed on $version" }
-            $result = Get-Content -LiteralPath (Join-Path $work 'measurement.json') -Raw | ConvertFrom-Json
-            if ($result.coreSha256 -ne $hashes[$version] -or $result.previews.Count -ne 9 -or $result.encodes.Count -ne 2) { throw 'Incomplete measurement or unexpected app Core' }
-            if ($result.speech.fileCount -le 32 -or $result.speech.passes.Count -ne 4 -or $result.speech.passes[0].fullHashes -ne $result.speech.fileCount) { throw 'Incomplete deployed speech inventory proof' }
-            if ($IsWindows) {
-                $repeated = @($result.speech.passes | Select-Object -Skip 1)
-                if ($version -eq '0.20.23' -and @($repeated | Where-Object { $_.fullHashes -ne 0 }).Count -ne 0) { throw 'Candidate reread a protected speech runtime digest' }
-                if ($version -eq '0.20.22' -and @($repeated | Where-Object { $_.fullHashes -gt 0 }).Count -ne 3) { throw 'Unexpected old release speech hash reference behavior' }
-            }
-            $all += [ordered]@{version=$version; trial=$trial; update=$updateData; media=$result}
-        }
-        $scenes = @($all[0].media.previews | ForEach-Object { $_.frameSha256 })
-        foreach ($row in $all) {
-            if ($row.media.sampleSha256 -ne $all[0].media.sampleSha256) { throw 'Compared different sample files' }
-            if ($row.media.speech.inputDigest -ne $all[0].media.speech.inputDigest) { throw 'The complete old and new speech identities differ' }
-            $actual = @($row.media.previews | ForEach-Object { $_.frameSha256 })
-            if (($actual -join ',') -ne ($scenes -join ',')) { throw 'The rendered preview differs from the release baseline for the same saved project' }
-        }
-        [ordered]@{
-            conditions='Same Windows VM, identical bundled MP4, signed baseline and candidate; process order ABBA. Device-backed PNG preview at three seek points, repeated three times per trial. Two 1080x1920 CPU renders per trial, fresh decode and duration/FPS/audio check. Export time excludes final validation. Both cores also independently hash the same official v22 speech worker inventory four times under nested read leases, with process I/O counters. Separate 128 MiB local synthetic signed-update workload measures process reads. No network update picker in these measurements.'
-            samePreviewFrames=$true; observations=$all
-        } | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $env:REPORT_ROOT 'comparative-performance.json') -Encoding utf8
-    - name: Run isolated Windows UI and real 1080p encode checks
-      shell: pwsh
-      run: |
-        $app=Join-Path $env:APP_ROOT 'KuzeliaStudio.exe'
-        $argument='--self-test-output "'+$env:REPORT_ROOT+'"'
-        $p=Start-Process -FilePath $app -ArgumentList $argument -PassThru
-        if(-not $p.WaitForExit(900000)){Stop-Process -Id $p.Id -Force;throw 'UI test exceeded 15 minutes'}
-        $path=Join-Path $env:REPORT_ROOT 'ui-acceptance.json'
-        if(-not (Test-Path $path)){throw 'App did not write a completion report'}
-        $result=Get-Content $path -Raw|ConvertFrom-Json
-        Get-Content $path -Raw|Write-Output
-        if($p.ExitCode -ne 0 -or -not $result.passed){throw 'Windows UI or encoding acceptance failed'}
-      if: ${{ !cancelled() && steps.runtime.outcome == 'success' }}
-      id: selftest
-    - name: Independently verify square pixels and portrait display ratio
-      shell: pwsh
-      run: |
-        $ErrorActionPreference='Stop'
-        $probe=Join-Path $env:APP_ROOT 'Tools/ffprobe.exe'
-        $checks=@()
-        foreach($fps in @(30,60)){foreach($requested in @('cpu','nvidia')){
-          $movie=Join-Path $env:REPORT_ROOT "encode-$requested-$fps.mp4"
-          $raw=& $probe -v error -select_streams v:0 -show_entries stream=width,height,sample_aspect_ratio,display_aspect_ratio,avg_frame_rate -of json $movie|Out-String
-          if($LASTEXITCODE -ne 0){throw 'Independent aspect probe failed'}
-          $stream=($raw|ConvertFrom-Json).streams[0]
-          if($stream.width -ne 1080 -or $stream.height -ne 1920 -or $stream.sample_aspect_ratio -ne '1:1' -or $stream.display_aspect_ratio -ne '9:16' -or $stream.avg_frame_rate -ne "$fps/1"){throw "Wrong square-pixel portrait format: $raw"}
-          $checks+=@{requested=$requested;fps=$fps;stream=$stream}
-        }}
-        @{passed=$true;cases=$checks;scope='Four freshly encoded Windows app outputs; independent bundled ffprobe check. No real GPU available.'}|ConvertTo-Json -Depth 8|Tee-Object -FilePath (Join-Path $env:REPORT_ROOT 'pixel-aspect-acceptance.json')
-      if: ${{ !cancelled() && steps.selftest.outcome == 'success' }}
-    - name: Exercise signed update helper from 0.20.22 and observe restart
-      if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.baseline.outcome == 'success' }}
-      shell: pwsh
-      run: |
-        $ErrorActionPreference='Stop'
-        $report=@{fromVersion='0.20.22';toVersion=$env:APP_VERSION;passed=$false;uiButtonAndNetworkFlowExercised=$false;limits='Actual old signed helper, parent shutdown, file replacement and restarted window on an ephemeral Windows VM. User PC, update-button path, network and antivirus are separate.'}
-        $target=$null;$parent=$null;$runner=$null
-        try {
-          $target=$env:BASE_ROOT
-          if((Get-FileHash (Join-Path $target 'Kuzelia.Core.dll')).Hash -ne $env:BASE_CORE_SHA){throw 'Wrong previous Core before update'}
-          $targetExe=Join-Path $target 'KuzeliaStudio.exe'
-          $normal=Join-Path $env:LOCALAPPDATA 'KuzeliaStudio.Native'
-          $stage=Join-Path $normal ('Updates\'+[Guid]::NewGuid().ToString('N'))
-          $payload=Join-Path $stage 'payload';$helper=Join-Path $stage 'runner'
-          New-Item -ItemType Directory -Path $payload,$helper -Force|Out-Null
-          foreach($file in Get-ChildItem -LiteralPath $env:APP_ROOT){if($file.Name -ne 'update-release.json'){Copy-Item -LiteralPath $file.FullName -Destination $payload -Recurse}}
-          Copy-Item -LiteralPath (Join-Path $env:APP_ROOT 'update-release.json') -Destination $stage
-          foreach($file in Get-ChildItem -LiteralPath $target -File){if($file.Extension -in '.dll','.exe','.json'){Copy-Item -LiteralPath $file.FullName -Destination $helper}}
-          [IO.File]::WriteAllText((Join-Path $target 'my-recording.mp4'),'UPDATE-SOURCE-KEEP')
-          [IO.File]::WriteAllText((Join-Path $normal 'ci-update-user-data.txt'),'UPDATE-DATA-KEEP')
-          $parent=Start-Process -FilePath $targetExe -WorkingDirectory $target -PassThru
-          for($i=0;$i -lt 120;$i++){$parent.Refresh();if($parent.HasExited){throw 'Previous app exited before update'};if($parent.MainWindowHandle -ne 0){break};Start-Sleep -Milliseconds 500}
-          if($parent.MainWindowHandle -eq 0){throw 'Previous app window did not open'}
-          $job=Join-Path $stage 'job.json'
-          @{target=$target;stage=$stage;parentId=$parent.Id;parentStartedTicks=$parent.StartTime.ToUniversalTime().Ticks;restartMode='home'}|ConvertTo-Json|Set-Content -LiteralPath $job -Encoding utf8NoBOM
-          $runner=Start-Process -FilePath (Join-Path $helper 'KuzeliaStudio.exe') -WorkingDirectory $helper -ArgumentList ('--apply-update "'+$job+'"') -PassThru
-          for($i=0;$i -lt 120 -and -not (Test-Path (Join-Path $stage 'ready'));$i++){if($runner.HasExited){throw 'Update helper exited before ready'};Start-Sleep -Milliseconds 500}
-          if(-not (Test-Path (Join-Path $stage 'ready'))){throw 'Update helper did not become ready'}
-          if(-not $parent.CloseMainWindow() -or -not $parent.WaitForExit(20000)){throw 'Previous app did not close normally'}
-          $report.oldParentExited=$true
-          if(-not $runner.WaitForExit(120000) -or $runner.ExitCode -ne 0){throw 'Update helper did not finish normally'}
-          $report.helperExited=$true
-          $restarted=$null
-          for($i=0;$i -lt 120;$i++){
-            $restarted=Get-Process -Name KuzeliaStudio -ErrorAction SilentlyContinue|Where-Object {$_.Path -eq $targetExe -and $_.Id -ne $parent.Id}|Select-Object -First 1
-            if($null -ne $restarted){$restarted.Refresh();if($restarted.MainWindowHandle -ne 0){break}}
-            Start-Sleep -Milliseconds 500
+      - name: Fetch and verify the released v22 runtime in a fresh hosted user
+        shell: pwsh
+        timeout-minutes: 3
+        run: |
+          $ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'
+          $rootDir=Join-Path $env:RUNNER_TEMP 'normal-public-update'
+          $reports=Join-Path $rootDir 'reports'
+          [IO.Directory]::CreateDirectory($reports)|Out-Null
+          $zip=Join-Path $rootDir 'v22.zip'
+          curl.exe -fLsS --retry 2 --max-time 100 -o $zip https://github.com/taisukek13-tech/KuzeliaStudio-Updates/releases/download/v0.20.22/KuzeliaStudio_Update_v0.20.22.zip
+          if($LASTEXITCODE -ne 0){throw 'Could not fetch released old runtime'}
+          $stream=[IO.File]::OpenRead($zip)
+          try{$hash=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($stream)).ToLowerInvariant()}finally{$stream.Dispose()}
+          if($hash -ne '257d5dc8c65650e8a59d06d683811241897eba92ac1b7901eb2f6cc773aaa710'){throw 'Public old runtime digest differs'}
+          $old=Join-Path $rootDir 'baseline'
+          [IO.Compression.ZipFile]::ExtractToDirectory($zip,$old)
+          $app=Join-Path $old 'KuzeliaStudio'
+          if(-not [IO.File]::Exists((Join-Path $app 'KuzeliaStudio.exe'))){throw 'Baseline app did not extract'}
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value ('LIVE_OLD_ROOT='+$app) -Encoding utf8
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value ('LIVE_PROOF='+$reports) -Encoding utf8
+          Write-Output ('Verified the released untouched baseline '+$hash)
+      - name: Use real v22 controls on the production Latest feed and verify the restarted app
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          $source=@'
+          $ErrorActionPreference='Stop'
+          $env:PSModulePath=$PSHOME+'\Modules;'+$env:ProgramFiles+'\WindowsPowerShell\Modules'
+          Import-Module Microsoft.PowerShell.Management,Microsoft.PowerShell.Utility -ErrorAction Stop
+          $ProgressPreference='SilentlyContinue'
+          Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, WindowsBase
+          $uiReferences=@([Windows.Automation.AutomationElement].Assembly.Location,[Windows.Automation.ControlType].Assembly.Location,[Windows.DependencyObject].Assembly.Location) | Select-Object -Unique
+          # Desktop automation providers may wait for a modal window to close. Keep its caller independent.
+          Add-Type -ReferencedAssemblies $uiReferences -TypeDefinition @"
+          using System;
+          using System.Threading;
+          using System.Windows.Automation;
+          public static class UiClick {
+              public static volatile string LastError;
+              [System.Runtime.InteropServices.DllImport("user32.dll")]
+              public static extern IntPtr GetForegroundWindow();
+              public static void Invoke(AutomationElement element) {
+                  InvokePattern button=(InvokePattern)element.GetCurrentPattern(InvokePattern.Pattern);
+                  Thread thread=new Thread(delegate() { try { button.Invoke(); } catch (Exception ex) { LastError=ex.Message; } });
+                  thread.IsBackground=true; thread.SetApartmentState(ApartmentState.MTA); thread.Start();
+              }
           }
-          if($null -eq $restarted -or $restarted.MainWindowHandle -eq 0){throw 'Updated app window did not restart'}
-          $report.restartedWindowPresent=$true
-          if((Get-FileHash (Join-Path $target 'Kuzelia.Core.dll') -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:CORE_SHA){throw 'Restarted app has another Core'}
-          $version=[Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $target 'KuzeliaStudio.dll')).FileVersion
-          if(-not $version.StartsWith($env:APP_VERSION+'.')){throw 'Restarted app version differs'}
-          $report.restartedFileVersion=$version
-          $envelope=Get-Content (Join-Path $target 'update-release.json') -Raw|ConvertFrom-Json
-          $manifest=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($envelope.payload))|ConvertFrom-Json
-          foreach($file in $manifest.files){if((Get-FileHash (Join-Path $target $file.path) -Algorithm SHA256).Hash.ToLowerInvariant() -ne $file.sha256){throw ('Updated inventory differs: '+$file.path)}}
-          $report.signedFilesVerified=$manifest.files.Count
-          if([IO.File]::ReadAllText((Join-Path $target 'my-recording.mp4')) -ne 'UPDATE-SOURCE-KEEP' -or [IO.File]::ReadAllText((Join-Path $normal 'ci-update-user-data.txt')) -ne 'UPDATE-DATA-KEEP'){throw 'Update changed user data'}
-          $report.unownedAndUserDataPreserved=$true
-          $pending=$null;$runOnce=[Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\RunOnce')
-          try {if($null -ne $runOnce){$pending=$runOnce.GetValue('KuzeliaStudioUpdate',$null)}} finally {if($null -ne $runOnce){$runOnce.Dispose()}}
-          if($null -ne $pending){throw 'Update recovery RunOnce was not cleared'}
-          $report.recoveryRegistrationCleared=$true;$report.passed=$true
-        } catch {$report.error=$_.Exception.Message;throw}
-        finally {
-          if($null -ne $target){foreach($process in Get-Process -Name KuzeliaStudio -ErrorAction SilentlyContinue){if($process.Path -eq (Join-Path $target 'KuzeliaStudio.exe')){if(-not $process.CloseMainWindow() -or -not $process.WaitForExit(10000)){Stop-Process -Id $process.Id -Force}}}}
-          if($null -ne $runner -and -not $runner.HasExited){Stop-Process -Id $runner.Id -Force}
-          $report|ConvertTo-Json -Depth 8|Tee-Object -FilePath (Join-Path $env:REPORT_ROOT 'update-restart-acceptance.json')
-        }
-    - name: Test new installation, repair and user-data preservation
-      if: ${{ !cancelled() && steps.runtime.outcome == 'success' }}
-      shell: pwsh
-      run: |
-        $ErrorActionPreference='Stop'
-        if($env:SETUP_SHA -notmatch '^[a-f0-9]{64}$'){throw 'Invalid setup SHA-256'}
-        $setup=Join-Path $env:RUNNER_TEMP 'KuzeliaAcceptanceIncoming\KuzeliaStudio_Setup_v0.20.23.exe'
-        if((Get-FileHash $setup -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:SETUP_SHA){throw 'Setup digest mismatch'}
-        $target=Join-Path $env:RUNNER_TEMP 'KuzeliaInstallTest'
-        $normal=Join-Path $env:LOCALAPPDATA 'KuzeliaStudio.Native'
-        New-Item -ItemType Directory -Path $normal -Force|Out-Null
-        $sentinel=Join-Path $normal 'ci-user-data.txt'
-        [IO.File]::WriteAllText($sentinel,'USER-DATA-KEEP')
-        function Install { $p=Start-Process -FilePath $setup -ArgumentList @('/S',('/D='+$target)) -PassThru -Wait;if($p.ExitCode -ne 0){throw 'Setup did not complete'} }
-        Install
-        [IO.File]::WriteAllText((Join-Path $target 'my-recording.mp4'),'SOURCE-KEEP')
-        New-Item -ItemType Directory -Path (Join-Path $target 'my-fonts') -Force|Out-Null
-        [IO.File]::WriteAllText((Join-Path $target 'my-fonts\custom.ttf'),'FONT-KEEP')
-        Install
-        $envelope=Get-Content (Join-Path $env:APP_ROOT 'update-release.json') -Raw|ConvertFrom-Json
-        $manifest=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($envelope.payload))|ConvertFrom-Json
-        foreach($file in $manifest.files){$path=Join-Path $target $file.path;if(-not (Test-Path $path) -or (Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant() -ne $file.sha256){throw ('Installed file differs: '+$file.path)}}
-        $p=Start-Process -FilePath (Join-Path $target 'Uninstall.exe') -ArgumentList '/S' -PassThru -Wait
-        for($i=0;$i -lt 40 -and (Test-Path (Join-Path $target 'KuzeliaStudio.exe'));$i++){Start-Sleep -Milliseconds 250}
-        $preserved=([IO.File]::ReadAllText($sentinel) -eq 'USER-DATA-KEEP' -and [IO.File]::ReadAllText((Join-Path $target 'my-recording.mp4')) -eq 'SOURCE-KEEP' -and [IO.File]::ReadAllText((Join-Path $target 'my-fonts\custom.ttf')) -eq 'FONT-KEEP')
-        $gone=-not (Test-Path (Join-Path $target 'KuzeliaStudio.exe'))
-        @{installedInventoryVerified=$true;repairCompleted=$true;uninstallRemovedOwnedApp=$gone;sourceSettingsAndFontsPreserved=$preserved;limits='Ephemeral hosted Windows user, not antivirus or real in-app update/restart acceptance.'}|ConvertTo-Json|Tee-Object -FilePath (Join-Path $env:REPORT_ROOT 'installer-acceptance.json')
-        if(-not $preserved -or -not $gone){throw 'Installer user-data preservation failed'}
-    - name: Retain small acceptance reports and app-window captures
-      if: always()
-      uses: actions/upload-artifact@v7
-      with:
-        name: Kuzelia-Windows-Acceptance-${{ github.run_id }}
-        path: ${{ runner.temp }}/KuzeliaAcceptanceReports
-        retention-days: 3
-        if-no-files-found: warn
+          "@
+          $root=[Windows.Automation.AutomationElement]::RootElement
+          $desc=[Windows.Automation.TreeScope]::Descendants
+          function Condition($property,$value){[Windows.Automation.PropertyCondition]::new($property,$value)}
+          function ByName($parent,[string]$name){
+              if($null -eq $parent){return}
+              $parent.FindFirst($desc,(Condition ([Windows.Automation.AutomationElement]::NameProperty) $name))
+          }
+          function NamedButton($parent,[string]$name){
+              if($null -eq $parent){return}
+              $nameTest=Condition ([Windows.Automation.AutomationElement]::NameProperty) $name
+              $typeTest=Condition ([Windows.Automation.AutomationElement]::ControlTypeProperty) ([Windows.Automation.ControlType]::Button)
+              $ee=$parent.FindFirst($desc,([Windows.Automation.AndCondition]::new($nameTest,$typeTest)))
+              if($ee -and $ee.Current.IsEnabled){$ee}
+          }
+          function ById($parent,[string]$id){
+              if($null -eq $parent){return}
+              $parent.FindFirst($desc,(Condition ([Windows.Automation.AutomationElement]::AutomationIdProperty) $id))
+          }
+          function ProcessWindow([int]$processId,[string]$prefix){
+              $wins=$root.FindAll([Windows.Automation.TreeScope]::Children,(Condition ([Windows.Automation.AutomationElement]::ProcessIdProperty) $processId))
+              foreach($w in $wins){if($w.Current.Name.StartsWith($prefix)){return $w}}
+              $handle=[UiClick]::GetForegroundWindow()
+              if($handle -ne [IntPtr]::Zero){
+                  $front=[Windows.Automation.AutomationElement]::FromHandle($handle)
+                  if($front.Current.ProcessId -eq $processId -and $front.Current.Name.StartsWith($prefix)){return $front}
+              }
+              $windowKind=Condition ([Windows.Automation.AutomationElement]::ControlTypeProperty) ([Windows.Automation.ControlType]::Window)
+              foreach($w in $wins){foreach($child in $w.FindAll($desc,$windowKind)){if($child.Current.Name.StartsWith($prefix)){return $child}}}
+          }
+          function WaitFor([string]$label,[scriptblock]$test,[int]$seconds=60){
+              $clock=[Diagnostics.Stopwatch]::StartNew()
+              while($clock.Elapsed.TotalSeconds -lt $seconds){
+                  try{$value=& $test;if($null -ne $value -and $value -ne $false){return $value}}catch [Windows.Automation.ElementNotAvailableException]{} catch [System.Runtime.InteropServices.COMException]{}
+                  Start-Sleep -Milliseconds 250
+              }
+              throw "Timed out waiting for $label. Automation provider: $([UiClick]::LastError)"
+          }
+
+          function FileDigest([string]$file){
+              $stream=[IO.File]::OpenRead($file);$h=[Security.Cryptography.SHA256]::Create()
+              try{return ([BitConverter]::ToString($h.ComputeHash($stream))).Replace('-','').ToLowerInvariant()}finally{$h.Dispose();$stream.Dispose()}
+          }
+          $target=$env:LIVE_OLD_ROOT;$targetExe=Join-Path $target 'KuzeliaStudio.exe'
+          $normal=Join-Path $env:LOCALAPPDATA 'KuzeliaStudio.Native';$parent=$null
+          $outfile=Join-Path $env:LIVE_PROOF 'live-update.json';$utf8=New-Object Text.UTF8Encoding($false)
+          $report=[ordered]@{passed=$false;fromVersion='0.20.22';toVersion='0.20.23';channel='';openedUpdateWindow=$false;checkedProductionFeed=$false;networkDownloadedCandidate=$false;restartButtonInvoked=$false;oldHelperObserved=$false;scope='Public v0.20.22, unmodified default Latest HTTPS, real visible buttons. Isolated hosted Windows VM, pinned public delta and signed inventory.';events=@()}
+          function Mark([string]$activity){
+              $report.events+=@{at=[DateTime]::UtcNow.ToString('o');activity=$activity}
+              Write-Output $activity
+              [IO.File]::WriteAllText($outfile,($report|ConvertTo-Json -Depth 8),$utf8)
+          }
+          try{
+              if((FileDigest (Join-Path $target 'Kuzelia.Core.dll')) -ne 'f5e105011c1629df7aa9e9d258387961e1893900edfdf7a52b14723754d24ee6'){throw 'Old Core differs'}
+              $report.channel=([IO.File]::ReadAllText((Join-Path $target 'update-channel.json'))|ConvertFrom-Json).feedUrl
+              if($report.channel -ne 'https://github.com/taisukek13-tech/KuzeliaStudio-Updates/releases/latest/download/latest.json'){throw 'Unexpected built-in release channel'}
+              $null=[IO.Directory]::CreateDirectory($normal)
+              if([IO.File]::Exists((Join-Path $normal 'update-source.json')) -or [IO.Directory]::Exists((Join-Path $normal 'Updates\Downloads'))){throw 'The stock app must start without override or cached package'}
+              [IO.File]::WriteAllText((Join-Path $normal 'update-preferences.json'),'{"automatic":false}')
+              [IO.File]::WriteAllText((Join-Path $target 'my-recording.mp4'),'UPDATE-SOURCE-KEEP')
+              [IO.File]::WriteAllText((Join-Path $normal 'ci-update-user-data.txt'),'UPDATE-DATA-KEEP')
+              Mark 'Launch the untouched public v0.20.22 app'
+              $parent=Start-Process -FilePath $targetExe -WorkingDirectory $target -PassThru
+              $homeWindow=WaitFor 'old app window' {$parent.Refresh();if($parent.HasExited){throw 'Old app exited early'};if($parent.MainWindowHandle -ne 0){[Windows.Automation.AutomationElement]::FromHandle($parent.MainWindowHandle)}} 90
+              [UiClick]::Invoke((WaitFor 'home update button' {NamedButton $homeWindow 'アプリを更新'}))
+              $dialog=WaitFor 'update window' {ProcessWindow $parent.Id 'アプリを更新'}
+              $report.openedUpdateWindow=$true; Mark 'Opened the stock update dialog'
+              [UiClick]::Invoke((WaitFor 'check latest button' {NamedButton $dialog '最新版を確認・取得'}))
+
+              Start-Sleep -Milliseconds 700
+              $ready=$null
+              for($attempt=1;$attempt -le 3;$attempt++){
+                  $resolved=WaitFor 'fresh production updater result' {
+                      if(NamedButton $dialog '更新して再起動'){return 'ready'}
+                      if((NamedButton $dialog '最新版を確認・取得') -and (ByName $dialog 'この配信先の最新版を使用しています。')){return 'old-feed'}
+                  } 50
+                  if($resolved -eq 'ready'){$ready=$true;break}
+                  if($attempt -lt 3){Start-Sleep -Seconds 4;[UiClick]::Invoke((WaitFor 'check again' {NamedButton $dialog '最新版を確認・取得'}));Start-Sleep -Milliseconds 700}
+              }
+              if(-not $ready){throw 'Released candidate was not offered by the default feed'}
+              $report.checkedProductionFeed=$true
+              $rootCache=Join-Path $normal 'Updates\Downloads'
+              $deltaHash='9cd54e09db5cc3a007a58bee4a44ed48e3a720eb59566a889c5db08a8dd4b508'
+              $hits=@([IO.Directory]::GetFiles($rootCache,('update-'+$deltaHash+'.zip'),[IO.SearchOption]::AllDirectories))
+              if($hits.Count -ne 1){throw 'Expected the genuine public v22-to-v23 delta in the empty cache'}
+              $report.downloadedPackageSha256=FileDigest $hits[0]
+              $report.downloadedPackageBytes=([IO.FileInfo]::new($hits[0])).Length
+              $report.downloadedFeedSha256=FileDigest ([IO.Path]::Combine([IO.Path]::GetDirectoryName($hits[0]),'feed.json'))
+              if($report.downloadedPackageSha256 -ne $deltaHash -or $report.downloadedPackageBytes -ne 1995771 -or $report.downloadedFeedSha256 -ne 'dd49168ec31441155c4daf956a7ce05624a1aa4e6ec5d90e3a6d9869a96278b9'){throw 'Downloaded delta or signed public feed differs'}
+              $report.networkDownloadedCandidate=$true
+              Mark 'Stock app fetched and verified the released delta and feed'
+              [UiClick]::Invoke((WaitFor 'update and restart button' {NamedButton $dialog '更新して再起動'}))
+              $report.restartButtonInvoked=$true; Mark 'Restart requested in the old app window'
+              $restarted=WaitFor 'same installed app process restarts' {
+                  $parent.Refresh()
+                  foreach($p in Get-Process KuzeliaStudio -ErrorAction SilentlyContinue){
+                      if($p.MainModule.FileName -like "$normal\Updates\*\runner\KuzeliaStudio.exe"){$report.oldHelperObserved=$true}
+                      if($p.MainModule.FileName -eq $targetExe -and $p.Id -ne $parent.Id -and $parent.HasExited -and $p.MainWindowHandle -ne 0){return $p}
+                  }
+              } 90
+              $report.oldParentExited=$parent.HasExited;$report.restartedWindowPresent=$restarted.MainWindowHandle -ne 0
+              $report.restartedFileVersion=[Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $target 'KuzeliaStudio.dll')).FileVersion
+              if(-not $report.restartedFileVersion.StartsWith($env:APP_VERSION+'.') -or (FileDigest (Join-Path $target 'Kuzelia.Core.dll')) -ne $env:CORE_SHA){throw 'Restarted app version or Core differs'}
+              $envelope=Get-Content (Join-Path $target 'update-release.json') -Raw|ConvertFrom-Json
+              $manifest=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($envelope.payload))|ConvertFrom-Json
+              foreach($file in $manifest.files){if((FileDigest (Join-Path $target $file.path)) -ne $file.sha256){throw ('Installed file differs: '+$file.path)}}
+              $report.signedFilesVerified=$manifest.files.Count
+              if([IO.File]::ReadAllText((Join-Path $target 'my-recording.mp4')) -ne 'UPDATE-SOURCE-KEEP' -or [IO.File]::ReadAllText((Join-Path $normal 'ci-update-user-data.txt')) -ne 'UPDATE-DATA-KEEP'){throw 'User data changed'}
+              $report.unownedAndUserDataPreserved=$true
+              $runOnce=[Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\RunOnce')
+              try{if($runOnce -and $null -ne $runOnce.GetValue('KuzeliaStudioUpdate',$null)){throw 'Updater RunOnce was not cleared'}}finally{if($runOnce){$runOnce.Dispose()}}
+              $report.recoveryRegistrationCleared=$true;$report.passed=$true
+
+              if($report.signedFilesVerified -ne 824){throw 'Wrong inventory size'}
+              Mark 'Verified updated window, 824 files and retained user fixtures'
+          }catch{
+              $report.passed=$false;$report.error=$_.Exception.Message
+              throw
+          }finally{
+              [IO.File]::WriteAllText($outfile,($report|ConvertTo-Json -Depth 8),$utf8)
+              if($targetExe){foreach($p in [Diagnostics.Process]::GetProcessesByName('KuzeliaStudio')){if($p.MainModule.FileName -eq $targetExe){if(-not $p.CloseMainWindow() -or -not $p.WaitForExit(6000)){$p.Kill()}}}}
+          }
+          '@
+          $driverPath=Join-Path $env:RUNNER_TEMP 'kuzelia-public-update.ps1'
+          [IO.File]::WriteAllText($driverPath,$source,[Text.UTF8Encoding]::new($true))
+          $legacyExe=Join-Path $env:windir 'System32\WindowsPowerShell\v1.0\powershell.exe'
+          $driver=Start-Process -FilePath $legacyExe -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-STA','-ExecutionPolicy','Bypass','-File',('"'+$driverPath+'"')) -NoNewWindow -PassThru
+          if(-not $driver.WaitForExit(215000)){Stop-Process -Id $driver.Id -Force;throw 'Post-publication Windows UI exceeded 215 seconds; see recorded events.'}
+          if($driver.ExitCode -ne 0){throw 'Public in-app update failed'}
+          $proof=Get-Content (Join-Path $env:LIVE_PROOF 'live-update.json') -Raw | ConvertFrom-Json
+          if(-not $proof.passed -or -not $proof.networkDownloadedCandidate -or -not $proof.restartButtonInvoked -or -not $proof.restartedWindowPresent -or $proof.signedFilesVerified -ne 824){throw 'Incomplete public update proof'}
+          Write-Output ($proof | ConvertTo-Json -Depth 8)
+      - name: Retain the public in-app update receipt
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: Kuzelia-Live-Update-${{ github.run_id }}
+          path: ${{ runner.temp }}/normal-public-update/reports
+          if-no-files-found: warn
+          retention-days: 3
