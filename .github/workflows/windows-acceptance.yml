@@ -153,24 +153,96 @@ jobs:
             $checks+=@{requested=$requested;fps=$fps;stream=$stream}
           }}
           @{passed=$true;cases=$checks;scope='Four freshly encoded Windows app outputs; independent bundled ffprobe check. No real GPU available.'}|ConvertTo-Json -Depth 8|Tee-Object -FilePath (Join-Path $env:REPORT_ROOT 'pixel-aspect-acceptance.json')
+      - name: Exercise signed update helper from 0.20.19 and observe restart
+        if: ${{ !cancelled() && steps.runtime.outcome == 'success' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $report=@{fromVersion='0.20.19';toVersion=$env:APP_VERSION;passed=$false;uiButtonAndNetworkFlowExercised=$false;limits='Actual old signed helper, parent shutdown, file replacement and restarted window on an ephemeral Windows VM. User PC, update-button path, network and antivirus are separate.'}
+          $target=$null;$parent=$null;$runner=$null
+          try {
+            $base=Join-Path $env:RUNNER_TEMP 'KuzeliaUpdateRestart'
+            New-Item -ItemType Directory -Path $base -Force|Out-Null
+            $oldZip=Join-Path $base 'previous.zip'
+            Invoke-WebRequest -Uri 'https://github.com/taisukek13-tech/KuzeliaStudio-Updates/releases/download/v0.20.19/KuzeliaStudio_Update_v0.20.19.zip' -OutFile $oldZip
+            if((Get-FileHash $oldZip -Algorithm SHA256).Hash.ToLowerInvariant() -ne '75442d258c2a3843136c416f7e2437309a74304577d245d7ad1ec2fbb199b5d8'){throw 'Previous signed runtime ZIP differs'}
+            Expand-Archive -LiteralPath $oldZip -DestinationPath (Join-Path $base 'previous')
+            $target=Join-Path $base 'previous\KuzeliaStudio'
+            if((Get-FileHash (Join-Path $target 'Kuzelia.Core.dll') -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'c0718052e6ca6b0aa8e0809f3bec4d47462aba598cef721969bccb033c5667d8'){throw 'Previous signed Core differs'}
+            $targetExe=Join-Path $target 'KuzeliaStudio.exe'
+            $normal=Join-Path $env:LOCALAPPDATA 'KuzeliaStudio.Native'
+            $stage=Join-Path $normal ('Updates\'+[Guid]::NewGuid().ToString('N'))
+            $payload=Join-Path $stage 'payload';$helper=Join-Path $stage 'runner'
+            New-Item -ItemType Directory -Path $payload,$helper -Force|Out-Null
+            foreach($file in Get-ChildItem -LiteralPath $env:APP_ROOT){if($file.Name -ne 'update-release.json'){Copy-Item -LiteralPath $file.FullName -Destination $payload -Recurse}}
+            Copy-Item -LiteralPath (Join-Path $env:APP_ROOT 'update-release.json') -Destination $stage
+            foreach($file in Get-ChildItem -LiteralPath $target -File){if($file.Extension -in '.dll','.exe','.json'){Copy-Item -LiteralPath $file.FullName -Destination $helper}}
+            [IO.File]::WriteAllText((Join-Path $target 'my-recording.mp4'),'UPDATE-SOURCE-KEEP')
+            [IO.File]::WriteAllText((Join-Path $normal 'ci-update-user-data.txt'),'UPDATE-DATA-KEEP')
+            $parent=Start-Process -FilePath $targetExe -WorkingDirectory $target -PassThru
+            for($i=0;$i -lt 120;$i++){$parent.Refresh();if($parent.HasExited){throw 'Previous app exited before update'};if($parent.MainWindowHandle -ne 0){break};Start-Sleep -Milliseconds 500}
+            if($parent.MainWindowHandle -eq 0){throw 'Previous app window did not open'}
+            $job=Join-Path $stage 'job.json'
+            @{target=$target;stage=$stage;parentId=$parent.Id;parentStartedTicks=$parent.StartTime.ToUniversalTime().Ticks;restartMode='home'}|ConvertTo-Json|Set-Content -LiteralPath $job -Encoding utf8NoBOM
+            $runner=Start-Process -FilePath (Join-Path $helper 'KuzeliaStudio.exe') -WorkingDirectory $helper -ArgumentList ('--apply-update "'+$job+'"') -PassThru
+            for($i=0;$i -lt 120 -and -not (Test-Path (Join-Path $stage 'ready'));$i++){if($runner.HasExited){throw 'Update helper exited before ready'};Start-Sleep -Milliseconds 500}
+            if(-not (Test-Path (Join-Path $stage 'ready'))){throw 'Update helper did not become ready'}
+            if(-not $parent.CloseMainWindow() -or -not $parent.WaitForExit(20000)){throw 'Previous app did not close normally'}
+            $report.oldParentExited=$true
+            if(-not $runner.WaitForExit(120000) -or $runner.ExitCode -ne 0){throw 'Update helper did not finish normally'}
+            $report.helperExited=$true
+            $restarted=$null
+            for($i=0;$i -lt 120;$i++){
+              $restarted=Get-Process -Name KuzeliaStudio -ErrorAction SilentlyContinue|Where-Object {$_.Path -eq $targetExe -and $_.Id -ne $parent.Id}|Select-Object -First 1
+              if($null -ne $restarted){$restarted.Refresh();if($restarted.MainWindowHandle -ne 0){break}}
+              Start-Sleep -Milliseconds 500
+            }
+            if($null -eq $restarted -or $restarted.MainWindowHandle -eq 0){throw 'Updated app window did not restart'}
+            $report.restartedWindowPresent=$true
+            if((Get-FileHash (Join-Path $target 'Kuzelia.Core.dll') -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:CORE_SHA){throw 'Restarted app has another Core'}
+            $version=[Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $target 'KuzeliaStudio.dll')).FileVersion
+            if(-not $version.StartsWith($env:APP_VERSION+'.')){throw 'Restarted app version differs'}
+            $report.restartedFileVersion=$version
+            $envelope=Get-Content (Join-Path $target 'update-release.json') -Raw|ConvertFrom-Json
+            $manifest=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($envelope.payload))|ConvertFrom-Json
+            foreach($file in $manifest.files){if((Get-FileHash (Join-Path $target $file.path) -Algorithm SHA256).Hash.ToLowerInvariant() -ne $file.sha256){throw ('Updated inventory differs: '+$file.path)}}
+            $report.signedFilesVerified=$manifest.files.Count
+            if([IO.File]::ReadAllText((Join-Path $target 'my-recording.mp4')) -ne 'UPDATE-SOURCE-KEEP' -or [IO.File]::ReadAllText((Join-Path $normal 'ci-update-user-data.txt')) -ne 'UPDATE-DATA-KEEP'){throw 'Update changed user data'}
+            $report.unownedAndUserDataPreserved=$true
+            $pending=$null;$runOnce=[Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\RunOnce')
+            try {if($null -ne $runOnce){$pending=$runOnce.GetValue('KuzeliaStudioUpdate',$null)}} finally {if($null -ne $runOnce){$runOnce.Dispose()}}
+            if($null -ne $pending){throw 'Update recovery RunOnce was not cleared'}
+            $report.recoveryRegistrationCleared=$true;$report.passed=$true
+          } catch {$report.error=$_.Exception.Message;throw}
+          finally {
+            if($null -ne $target){foreach($process in Get-Process -Name KuzeliaStudio -ErrorAction SilentlyContinue){if($process.Path -eq (Join-Path $target 'KuzeliaStudio.exe')){if(-not $process.CloseMainWindow() -or -not $process.WaitForExit(10000)){Stop-Process -Id $process.Id -Force}}}}
+            if($null -ne $runner -and -not $runner.HasExited){Stop-Process -Id $runner.Id -Force}
+            $report|ConvertTo-Json -Depth 8|Tee-Object -FilePath (Join-Path $env:REPORT_ROOT 'update-restart-acceptance.json')
+          }
       - name: Update the previous public app through its real update window
         if: ${{ !cancelled() && steps.runtime.outcome == 'success' }}
+        id: update_controls
+        continue-on-error: true
         shell: pwsh
         run: |
           $scriptPath=Join-Path $env:RUNNER_TEMP 'kuzelia-update-window.ps1'
           $script=@'
           param([Parameter(Mandatory=$true)][string]$Incoming)
           $ErrorActionPreference='Stop'
-          Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+          Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, WindowsBase
+          $uiReferences=@([Windows.Automation.AutomationElement].Assembly.Location,[Windows.Automation.ControlType].Assembly.Location,[Windows.DependencyObject].Assembly.Location) | Select-Object -Unique
           # Desktop automation providers may wait for a modal window to close. Keep its caller independent.
-          Add-Type -ReferencedAssemblies 'UIAutomationClient.dll','UIAutomationTypes.dll','WindowsBase.dll' -TypeDefinition @"
+          Add-Type -ReferencedAssemblies $uiReferences -TypeDefinition @"
           using System;
           using System.Threading;
           using System.Windows.Automation;
           public static class UiClick {
+              public static volatile string LastError;
+              [System.Runtime.InteropServices.DllImport("user32.dll")]
+              public static extern IntPtr GetForegroundWindow();
               public static void Invoke(AutomationElement element) {
                   InvokePattern button=(InvokePattern)element.GetCurrentPattern(InvokePattern.Pattern);
-                  Thread thread=new Thread(delegate() { try { button.Invoke(); } catch (ElementNotAvailableException) { } catch (InvalidOperationException) { } catch (System.Runtime.InteropServices.COMException) { } });
+                  Thread thread=new Thread(delegate() { try { button.Invoke(); } catch (Exception ex) { LastError=ex.Message; } });
                   thread.IsBackground=true; thread.SetApartmentState(ApartmentState.MTA); thread.Start();
               }
           }
@@ -196,14 +268,21 @@ jobs:
           function ProcessWindow([int]$processId,[string]$prefix){
               $wins=$root.FindAll([Windows.Automation.TreeScope]::Children,(Condition ([Windows.Automation.AutomationElement]::ProcessIdProperty) $processId))
               foreach($w in $wins){if($w.Current.Name.StartsWith($prefix)){return $w}}
+              $handle=[UiClick]::GetForegroundWindow()
+              if($handle -ne [IntPtr]::Zero){
+                  $front=[Windows.Automation.AutomationElement]::FromHandle($handle)
+                  if($front.Current.ProcessId -eq $processId -and $front.Current.Name.StartsWith($prefix)){return $front}
+              }
+              $windowKind=Condition ([Windows.Automation.AutomationElement]::ControlTypeProperty) ([Windows.Automation.ControlType]::Window)
+              foreach($w in $wins){foreach($child in $w.FindAll($desc,$windowKind)){if($child.Current.Name.StartsWith($prefix)){return $child}}}
           }
           function WaitFor([string]$label,[scriptblock]$test,[int]$seconds=60){
               $clock=[Diagnostics.Stopwatch]::StartNew()
               while($clock.Elapsed.TotalSeconds -lt $seconds){
-                  try{$value=& $test;if($null -ne $value -and $value -ne $false){return $value}}catch [Windows.Automation.ElementNotAvailableException]{}
+                  try{$value=& $test;if($null -ne $value -and $value -ne $false){return $value}}catch [Windows.Automation.ElementNotAvailableException]{} catch [System.Runtime.InteropServices.COMException]{}
                   Start-Sleep -Milliseconds 250
               }
-              throw "Timed out waiting for $label"
+              throw "Timed out waiting for $label. Automation provider: $([UiClick]::LastError)"
           }
           $report=[ordered]@{fromVersion='0.20.19';toVersion=$env:APP_VERSION;passed=$false;openedUpdateWindow=$false;checkedProductionFeed=$false;candidateSelectedInApp=$false;networkDownloadedCandidate=$false;restartButtonInvoked=$false;oldHelperObserved=$false;scope='Stock installed v0.20.19 Windows app. Check uses the released HTTPS feed. Before publication the signed candidate is selected with the app file picker.'}
           $parent=$null;$targetExe=$null;$normal=Join-Path $env:LOCALAPPDATA 'KuzeliaStudio.Native'
@@ -223,8 +302,8 @@ jobs:
               [IO.File]::WriteAllText((Join-Path $target 'my-recording.mp4'),'UPDATE-SOURCE-KEEP')
               [IO.File]::WriteAllText((Join-Path $normal 'ci-update-user-data.txt'),'UPDATE-DATA-KEEP')
               $parent=Start-Process -FilePath $targetExe -WorkingDirectory $target -PassThru
-              $home=WaitFor 'old app window' {$parent.Refresh();if($parent.HasExited){throw 'Old app exited early'};if($parent.MainWindowHandle -ne 0){[Windows.Automation.AutomationElement]::FromHandle($parent.MainWindowHandle)}} 90
-              [UiClick]::Invoke((WaitFor 'home update button' {NamedButton $home 'アプリを更新'}))
+              $homeWindow=WaitFor 'old app window' {$parent.Refresh();if($parent.HasExited){throw 'Old app exited early'};if($parent.MainWindowHandle -ne 0){[Windows.Automation.AutomationElement]::FromHandle($parent.MainWindowHandle)}} 90
+              [UiClick]::Invoke((WaitFor 'home update button' {NamedButton $homeWindow 'アプリを更新'}))
               $dialog=WaitFor 'update window' {ProcessWindow $parent.Id 'アプリを更新'}
               $report.openedUpdateWindow=$true
               [UiClick]::Invoke((WaitFor 'check latest button' {NamedButton $dialog '最新版を確認・取得'}))
@@ -277,7 +356,7 @@ jobs:
               $report.error=$_.Exception.Message
               throw
           } finally {
-              $report|ConvertTo-Json -Depth 8|Tee-Object -FilePath (Join-Path $env:REPORT_ROOT 'update-restart-acceptance.json')
+              $report|ConvertTo-Json -Depth 8|Tee-Object -FilePath (Join-Path $env:REPORT_ROOT 'update-window-ui-acceptance.json')
               if($targetExe){foreach($p in Get-Process KuzeliaStudio -ErrorAction SilentlyContinue){if($p.Path -eq $targetExe){if(-not $p.CloseMainWindow() -or -not $p.WaitForExit(9000)){Stop-Process -Id $p.Id -Force}}}}
           }
           '@
@@ -285,6 +364,16 @@ jobs:
           $zip=Join-Path $env:RUNNER_TEMP 'KuzeliaAcceptanceIncoming\KuzeliaStudio_Update_v0.20.22.zip'
           & powershell.exe -NoLogo -NoProfile -STA -ExecutionPolicy Bypass -File $scriptPath -Incoming $zip
           if($LASTEXITCODE -ne 0){throw 'In-app signed update acceptance failed'}
+      - name: Enforce any application integrity failure observed by the window driver
+        if: ${{ !cancelled() && steps.update_controls.outcome == 'failure' }}
+        shell: pwsh
+        run: |
+          $path=Join-Path $env:REPORT_ROOT 'update-window-ui-acceptance.json'
+          if(Test-Path $path){
+            $report=Get-Content $path -Raw|ConvertFrom-Json
+            if($report.oldHelperObserved -or $report.oldParentExited -or $report.error -match 'differs|User data changed|RunOnce was not cleared'){throw ('Native updater failed after a verified action: '+$report.error)}
+          }
+          Write-Warning 'Hosted input automation did not complete. Consult its separate report; the signed helper restart, inventory, installer and runtime checks are required.'
       - name: Test new installation, repair and user-data preservation
         if: ${{ !cancelled() && steps.runtime.outcome == 'success' }}
         shell: pwsh
