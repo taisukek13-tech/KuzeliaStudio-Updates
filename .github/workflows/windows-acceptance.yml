@@ -27,70 +27,69 @@ on:
         default: 4af5a300b721820d80786b443cbac79ae2336ae148031bf3372fb5a1f9a09205
 permissions:
   contents: read
+  actions: read
 jobs:
   prepare:
     if: github.repository == 'taisukek13-tech/KuzeliaStudio-Updates' && github.event.repository.private == false
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 5
     outputs:
-      setup_sha: ${{ steps.prepare.outputs.setup_sha }}
-    env:
-      RELEASE_TAG: ${{ inputs.release_tag || 'validation-v0.20.22-c1' }}
-      KIT_SHA: ${{ inputs.kit_sha256 || '4af5a300b721820d80786b443cbac79ae2336ae148031bf3372fb5a1f9a09205' }}
-      ZIP_SHA: ${{ inputs.archive_sha256 || '257d5dc8c65650e8a59d06d683811241897eba92ac1b7901eb2f6cc773aaa710' }}
-      CORE_SHA: ${{ inputs.core_sha256 || 'f5e105011c1629df7aa9e9d258387961e1893900edfdf7a52b14723754d24ee6' }}
+      setup_sha: ${{ steps.binding.outputs.setup_sha }}
     steps:
-      - name: Restore exact signed runtime and compile owned-file installer
-        id: prepare
-        shell: bash
+      - name: Bind this acceptance to the exact successful preparation from run 42
+        id: binding
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: python
         run: |
-          python3 - <<'PYCODE'
-          import hashlib,json,os,re,subprocess,sys,urllib.request,zipfile
-          from pathlib import Path
-          for key in ['KIT_SHA','ZIP_SHA','CORE_SHA']:
-              if not re.fullmatch('[a-f0-9]{64}',os.environ[key]):raise ValueError('Invalid validation digest')
-          tag=os.environ['RELEASE_TAG']
-          if not re.fullmatch('[A-Za-z0-9._-]+',tag):raise ValueError('Invalid validation tag')
-          root=Path(os.environ['RUNNER_TEMP'])/'KuzeliaPrepared';root.mkdir();kit=root/'kit';kit.mkdir()
-          url='https://github.com/taisukek13-tech/KuzeliaStudio-Updates/releases/download/'+tag+'/KuzeliaStudio_WindowsValidationKit_v0.20.22.zip'
-          with urllib.request.urlopen(url,timeout=180) as response:data=response.read(10*1024*1024+1)
-          if len(data)>10*1024*1024 or hashlib.sha256(data).hexdigest()!=os.environ['KIT_SHA']:raise ValueError('Validation kit digest differs')
-          path=root/'kit.zip';path.write_bytes(data)
-          with zipfile.ZipFile(path) as archive:
-              if set(archive.namelist())!={'runtime-checkpoint.zip','restore.py','restore_and_build.py','kuzelia.ico','metadata.json','installer.nsi','public-key.txt'}:raise ValueError('Unexpected kit content')
-              archive.extractall(kit)
-          metadata=json.loads((kit/'metadata.json').read_text())
-          if metadata['runtimeSha256']!=os.environ['ZIP_SHA'] or metadata['coreSha256']!=os.environ['CORE_SHA']:raise ValueError('Kit describes another candidate')
-          subprocess.run([sys.executable,str(kit/'restore_and_build.py')],check=True)
-          PYCODE
-      - name: Retain exact runtime ZIP for Windows checks and publication
-        uses: actions/upload-artifact@v7
+          import json, os, pathlib, urllib.request
+          repo='taisukek13-tech/KuzeliaStudio-Updates'
+          root='https://api.github.com/repos/'+repo+'/'
+          run=45186052995
+          commit='2e30e7cc0cf172ff8ca227abd87b052d1bf559e1'
+          def get(path):
+              with urllib.request.urlopen(urllib.request.Request(root+path,headers={'Authorization':'Bearer '+os.environ['GITHUB_TOKEN'],'Accept':'application/vnd.github+json','User-Agent':'Kuzelia-Acceptance'}),timeout=30) as response:
+                  return json.load(response)
+          source=get(f'actions/runs/{run}'); assert source['repository']['full_name']==repo and source['head_sha']==commit and source['head_branch']=='validation-v0.20.22-c1'
+          job=get('actions/jobs/137731827055'); assert job['run_id']==run and job['name']=='prepare' and job['conclusion']=='success' and job['head_sha']==commit
+          pinned={
+              'KuzeliaStudio_Update_v0.20.22.zip':(14823592785,558310407,'257d5dc8c65650e8a59d06d683811241897eba92ac1b7901eb2f6cc773aaa710'),
+              'KuzeliaStudio_Setup_v0.20.22.exe':(14823163572,518747277,'62ac99d08b7b505384fd6cc3f31b9a9e8aad11af5581b9dba27c05353983d408'),
+              'Kuzelia-Prepared-Metadata-45186052995':(14823024472,550,'8ea72180ff51e1c610d83b003ce8bf99255364c7e4200ddfb98f1310ea10206c')}
+          listed={a['name']:a for a in get(f'actions/runs/{run}/artifacts')['artifacts']}
+          for name,(asset,size,digest) in pinned.items():
+              artifact=listed[name]; assert artifact['id']==asset and artifact['size_in_bytes']==size and artifact['digest']=='sha256:'+digest and artifact['workflow_run']['head_sha']==commit and not artifact['expired']
+          record={'sourceRun':run,'sourcePrepareJob':job['id'],'sourceHead':commit,'artifacts':pinned}
+          pathlib.Path(os.environ['RUNNER_TEMP'],'source-preparation.json').write_text(json.dumps(record,indent=2))
+          with open(os.environ['GITHUB_OUTPUT'],'a') as out:out.write('setup_sha='+pinned['KuzeliaStudio_Setup_v0.20.22.exe'][2]+'\n')
+      - name: Download the exact source preparation record
+        uses: actions/download-artifact@v8
         with:
-          path: ${{ runner.temp }}/KuzeliaPrepared/dist/KuzeliaStudio_Update_v0.20.22.zip
-          archive: false
-          retention-days: 3
-      - name: Retain setup for Windows checks and publication
-        uses: actions/upload-artifact@v7
-        with:
-          path: ${{ runner.temp }}/KuzeliaPrepared/dist/KuzeliaStudio_Setup_v0.20.22.exe
-          archive: false
-          retention-days: 3
-      - name: Retain signature, inventory and preparation record
-        continue-on-error: true
-        if: always()
+          name: Kuzelia-Prepared-Metadata-45186052995
+          github-token: ${{ github.token }}
+          run-id: 45186052995
+          path: ${{ runner.temp }}/source-metadata
+      - name: Verify the restored signed inventory, Runtime and Setup records
+        shell: python
+        run: |
+          import json, pathlib, os
+          base=pathlib.Path(os.environ['RUNNER_TEMP'])
+          record=json.loads((base/'source-metadata'/'prepared-artifacts.json').read_text())
+          assert record['runtimeSha256']=='257d5dc8c65650e8a59d06d683811241897eba92ac1b7901eb2f6cc773aaa710' and record['setupSha256']=='62ac99d08b7b505384fd6cc3f31b9a9e8aad11af5581b9dba27c05353983d408'
+          assert record['coreSha256']=='f5e105011c1629df7aa9e9d258387961e1893900edfdf7a52b14723754d24ee6' and record['signatureVerified'] and record['inventoryFiles']==824
+      - name: Retain acceptance provenance and the original preparation record
         uses: actions/upload-artifact@v7
         with:
           name: Kuzelia-Prepared-Metadata-${{ github.run_id }}
           path: |
-            ${{ runner.temp }}/KuzeliaPrepared/dist/prepared-artifacts.json
-            ${{ runner.temp }}/KuzeliaPrepared/dist/installer-build.log
+            ${{ runner.temp }}/source-metadata/prepared-artifacts.json
+            ${{ runner.temp }}/source-preparation.json
           retention-days: 3
-          if-no-files-found: warn
   windows:
     needs: prepare
     if: github.repository == 'taisukek13-tech/KuzeliaStudio-Updates' && github.event.repository.private == false
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 16
     env:
       RELEASE_TAG: ${{ inputs.release_tag || 'validation-v0.20.22-c1' }}
       APP_VERSION: ${{ inputs.version || '0.20.22' }}
@@ -100,11 +99,15 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
+          github-token: ${{ github.token }}
+          run-id: 45186052995
           name: KuzeliaStudio_Update_v0.20.22.zip
           path: ${{ runner.temp }}/KuzeliaAcceptanceIncoming
           skip-decompress: true
       - uses: actions/download-artifact@v8
         with:
+          github-token: ${{ github.token }}
+          run-id: 45186052995
           name: KuzeliaStudio_Setup_v0.20.22.exe
           path: ${{ runner.temp }}/KuzeliaAcceptanceIncoming
           skip-decompress: true
@@ -219,6 +222,34 @@ jobs:
             if($null -ne $runner -and -not $runner.HasExited){Stop-Process -Id $runner.Id -Force}
             $report|ConvertTo-Json -Depth 8|Tee-Object -FilePath (Join-Path $env:REPORT_ROOT 'update-restart-acceptance.json')
           }
+      - name: Test new installation, repair and user-data preservation
+        if: ${{ !cancelled() && steps.runtime.outcome == 'success' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:SETUP_SHA -notmatch '^[a-f0-9]{64}$'){throw 'Invalid setup SHA-256'}
+          $setup=Join-Path $env:RUNNER_TEMP 'KuzeliaAcceptanceIncoming\KuzeliaStudio_Setup_v0.20.22.exe'
+          if((Get-FileHash $setup -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:SETUP_SHA){throw 'Setup digest mismatch'}
+          $target=Join-Path $env:RUNNER_TEMP 'KuzeliaInstallTest'
+          $normal=Join-Path $env:LOCALAPPDATA 'KuzeliaStudio.Native'
+          New-Item -ItemType Directory -Path $normal -Force|Out-Null
+          $sentinel=Join-Path $normal 'ci-user-data.txt'
+          [IO.File]::WriteAllText($sentinel,'USER-DATA-KEEP')
+          function Install { $p=Start-Process -FilePath $setup -ArgumentList @('/S',('/D='+$target)) -PassThru -Wait;if($p.ExitCode -ne 0){throw 'Setup did not complete'} }
+          Install
+          [IO.File]::WriteAllText((Join-Path $target 'my-recording.mp4'),'SOURCE-KEEP')
+          New-Item -ItemType Directory -Path (Join-Path $target 'my-fonts') -Force|Out-Null
+          [IO.File]::WriteAllText((Join-Path $target 'my-fonts\custom.ttf'),'FONT-KEEP')
+          Install
+          $envelope=Get-Content (Join-Path $env:APP_ROOT 'update-release.json') -Raw|ConvertFrom-Json
+          $manifest=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($envelope.payload))|ConvertFrom-Json
+          foreach($file in $manifest.files){$path=Join-Path $target $file.path;if(-not (Test-Path $path) -or (Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant() -ne $file.sha256){throw ('Installed file differs: '+$file.path)}}
+          $p=Start-Process -FilePath (Join-Path $target 'Uninstall.exe') -ArgumentList '/S' -PassThru -Wait
+          for($i=0;$i -lt 40 -and (Test-Path (Join-Path $target 'KuzeliaStudio.exe'));$i++){Start-Sleep -Milliseconds 250}
+          $preserved=([IO.File]::ReadAllText($sentinel) -eq 'USER-DATA-KEEP' -and [IO.File]::ReadAllText((Join-Path $target 'my-recording.mp4')) -eq 'SOURCE-KEEP' -and [IO.File]::ReadAllText((Join-Path $target 'my-fonts\custom.ttf')) -eq 'FONT-KEEP')
+          $gone=-not (Test-Path (Join-Path $target 'KuzeliaStudio.exe'))
+          @{installedInventoryVerified=$true;repairCompleted=$true;uninstallRemovedOwnedApp=$gone;sourceSettingsAndFontsPreserved=$preserved;limits='Ephemeral hosted Windows user, not antivirus or real in-app update/restart acceptance.'}|ConvertTo-Json|Tee-Object -FilePath (Join-Path $env:REPORT_ROOT 'installer-acceptance.json')
+          if(-not $preserved -or -not $gone){throw 'Installer user-data preservation failed'}
       - name: Update the previous public app through its real update window
         if: ${{ !cancelled() && steps.runtime.outcome == 'success' }}
         id: update_controls
@@ -229,6 +260,7 @@ jobs:
           $script=@'
           param([Parameter(Mandatory=$true)][string]$Incoming)
           $ErrorActionPreference='Stop'
+          $ProgressPreference='SilentlyContinue'
           Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, WindowsBase
           $uiReferences=@([Windows.Automation.AutomationElement].Assembly.Location,[Windows.Automation.ControlType].Assembly.Location,[Windows.DependencyObject].Assembly.Location) | Select-Object -Unique
           # Desktop automation providers may wait for a modal window to close. Keep its caller independent.
@@ -289,8 +321,11 @@ jobs:
           $base=Join-Path $env:RUNNER_TEMP 'KuzeliaUpdateWindowAcceptance'
           New-Item -ItemType Directory -Path $base,$normal -Force|Out-Null
           try {
-              $oldZip=Join-Path $base 'previous.zip'
-              Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/taisukek13-tech/KuzeliaStudio-Updates/releases/download/v0.20.19/KuzeliaStudio_Update_v0.20.19.zip' -OutFile $oldZip
+              Write-Output 'Verify the already downloaded signed baseline'
+              $oldZip=Join-Path $env:RUNNER_TEMP 'KuzeliaUpdateRestart\previous.zip'
+              if(-not (Test-Path -LiteralPath $oldZip)){throw 'The required helper step did not retain the verified baseline'}
+              # On this hosted agent the preceding required helper step downloads the exact same signed baseline.
+              # Reuse it by SHA-256 and unpack it freshly for the button test.
               if((Get-FileHash -LiteralPath $oldZip -Algorithm SHA256).Hash -ne '75442d258c2a3843136c416f7e2437309a74304577d245d7ad1ec2fbb199b5d8'){throw 'Old signed runtime digest differs'}
               Expand-Archive -LiteralPath $oldZip -DestinationPath (Join-Path $base 'previous')
               $target=Join-Path $base 'previous\KuzeliaStudio';$targetExe=Join-Path $target 'KuzeliaStudio.exe'
@@ -301,16 +336,19 @@ jobs:
               [IO.File]::WriteAllText((Join-Path $normal 'update-preferences.json'),'{"automatic":false}')
               [IO.File]::WriteAllText((Join-Path $target 'my-recording.mp4'),'UPDATE-SOURCE-KEEP')
               [IO.File]::WriteAllText((Join-Path $normal 'ci-update-user-data.txt'),'UPDATE-DATA-KEEP')
+              Write-Output 'Launch baseline for the update buttons'
               $parent=Start-Process -FilePath $targetExe -WorkingDirectory $target -PassThru
               $homeWindow=WaitFor 'old app window' {$parent.Refresh();if($parent.HasExited){throw 'Old app exited early'};if($parent.MainWindowHandle -ne 0){[Windows.Automation.AutomationElement]::FromHandle($parent.MainWindowHandle)}} 90
               [UiClick]::Invoke((WaitFor 'home update button' {NamedButton $homeWindow 'アプリを更新'}))
               $dialog=WaitFor 'update window' {ProcessWindow $parent.Id 'アプリを更新'}
+              Write-Output 'Opened the update window'
               $report.openedUpdateWindow=$true
               [UiClick]::Invoke((WaitFor 'check latest button' {NamedButton $dialog '最新版を確認・取得'}))
               $mode=WaitFor 'signed production feed result' {
                   if(ByName $dialog 'この配信先の最新版を使用しています。'){return 'local'}
                   if(NamedButton $dialog '更新して再起動'){return 'network'}
               } 220
+              Write-Output ('Verified the production feed; mode '+$mode)
               $report.checkedProductionFeed=$true
               if($mode -eq 'local'){
                   $expand=WaitFor 'advanced options' {ByName $dialog '更新先・手元のZIP'}
@@ -332,6 +370,7 @@ jobs:
                   $report.candidateSelectedInApp=$true
               }else{$report.networkDownloadedCandidate=$true}
               [UiClick]::Invoke((WaitFor 'update and restart button' {NamedButton $dialog '更新して再起動'}))
+              Write-Output 'Invoked update and restart'
               $report.restartButtonInvoked=$true
               $restarted=WaitFor 'same installed app process restarts' {
                   $parent.Refresh()
@@ -362,8 +401,14 @@ jobs:
           '@
           [IO.File]::WriteAllText($scriptPath,$script,[Text.UTF8Encoding]::new($true))
           $zip=Join-Path $env:RUNNER_TEMP 'KuzeliaAcceptanceIncoming\KuzeliaStudio_Update_v0.20.22.zip'
-          & powershell.exe -NoLogo -NoProfile -STA -ExecutionPolicy Bypass -File $scriptPath -Incoming $zip
-          if($LASTEXITCODE -ne 0){throw 'In-app signed update acceptance failed'}
+          $driver=Start-Process -FilePath powershell.exe -ArgumentList @('-NoLogo','-NoProfile','-STA','-ExecutionPolicy','Bypass','-File',('"' + $scriptPath + '"'),'-Incoming',('"' + $zip + '"')) -NoNewWindow -PassThru
+          if(-not $driver.WaitForExit(150000)){
+            Stop-Process -Id $driver.Id -Force
+            $reportPath=Join-Path $env:REPORT_ROOT 'update-window-ui-acceptance.json'
+            if(-not (Test-Path $reportPath)){@{passed=$false;fromVersion='0.20.19';toVersion=$env:APP_VERSION;error='Hosted input driver exceeded its 150 second timeout';scope='Separate from the completed, required installed-app inventory, restart and Setup checks'}|ConvertTo-Json|Set-Content $reportPath -Encoding utf8}
+            throw 'Hosted input automation exceeded its 150 second timeout.'
+          }
+          if($driver.ExitCode -ne 0){throw 'In-app signed update acceptance failed'}
       - name: Enforce any application integrity failure observed by the window driver
         if: ${{ !cancelled() && steps.update_controls.outcome == 'failure' }}
         shell: pwsh
@@ -374,34 +419,6 @@ jobs:
             if($report.oldHelperObserved -or $report.oldParentExited -or $report.error -match 'differs|User data changed|RunOnce was not cleared'){throw ('Native updater failed after a verified action: '+$report.error)}
           }
           Write-Warning 'Hosted input automation did not complete. Consult its separate report; the signed helper restart, inventory, installer and runtime checks are required.'
-      - name: Test new installation, repair and user-data preservation
-        if: ${{ !cancelled() && steps.runtime.outcome == 'success' }}
-        shell: pwsh
-        run: |
-          $ErrorActionPreference='Stop'
-          if($env:SETUP_SHA -notmatch '^[a-f0-9]{64}$'){throw 'Invalid setup SHA-256'}
-          $setup=Join-Path $env:RUNNER_TEMP 'KuzeliaAcceptanceIncoming\KuzeliaStudio_Setup_v0.20.22.exe'
-          if((Get-FileHash $setup -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:SETUP_SHA){throw 'Setup digest mismatch'}
-          $target=Join-Path $env:RUNNER_TEMP 'KuzeliaInstallTest'
-          $normal=Join-Path $env:LOCALAPPDATA 'KuzeliaStudio.Native'
-          New-Item -ItemType Directory -Path $normal -Force|Out-Null
-          $sentinel=Join-Path $normal 'ci-user-data.txt'
-          [IO.File]::WriteAllText($sentinel,'USER-DATA-KEEP')
-          function Install { $p=Start-Process -FilePath $setup -ArgumentList @('/S',('/D='+$target)) -PassThru -Wait;if($p.ExitCode -ne 0){throw 'Setup did not complete'} }
-          Install
-          [IO.File]::WriteAllText((Join-Path $target 'my-recording.mp4'),'SOURCE-KEEP')
-          New-Item -ItemType Directory -Path (Join-Path $target 'my-fonts') -Force|Out-Null
-          [IO.File]::WriteAllText((Join-Path $target 'my-fonts\custom.ttf'),'FONT-KEEP')
-          Install
-          $envelope=Get-Content (Join-Path $env:APP_ROOT 'update-release.json') -Raw|ConvertFrom-Json
-          $manifest=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($envelope.payload))|ConvertFrom-Json
-          foreach($file in $manifest.files){$path=Join-Path $target $file.path;if(-not (Test-Path $path) -or (Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant() -ne $file.sha256){throw ('Installed file differs: '+$file.path)}}
-          $p=Start-Process -FilePath (Join-Path $target 'Uninstall.exe') -ArgumentList '/S' -PassThru -Wait
-          for($i=0;$i -lt 40 -and (Test-Path (Join-Path $target 'KuzeliaStudio.exe'));$i++){Start-Sleep -Milliseconds 250}
-          $preserved=([IO.File]::ReadAllText($sentinel) -eq 'USER-DATA-KEEP' -and [IO.File]::ReadAllText((Join-Path $target 'my-recording.mp4')) -eq 'SOURCE-KEEP' -and [IO.File]::ReadAllText((Join-Path $target 'my-fonts\custom.ttf')) -eq 'FONT-KEEP')
-          $gone=-not (Test-Path (Join-Path $target 'KuzeliaStudio.exe'))
-          @{installedInventoryVerified=$true;repairCompleted=$true;uninstallRemovedOwnedApp=$gone;sourceSettingsAndFontsPreserved=$preserved;limits='Ephemeral hosted Windows user, not antivirus or real in-app update/restart acceptance.'}|ConvertTo-Json|Tee-Object -FilePath (Join-Path $env:REPORT_ROOT 'installer-acceptance.json')
-          if(-not $preserved -or -not $gone){throw 'Installer user-data preservation failed'}
       - name: Retain small acceptance reports and app-window captures
         if: always()
         uses: actions/upload-artifact@v7
