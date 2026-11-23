@@ -5,23 +5,23 @@ on:
       release_tag:
         description: Public validation-kit release tag
         required: true
-        default: validation-v0.18.6-c1
+        default: validation-v0.20.19-c1
       version:
         description: App version
         required: true
-        default: 0.18.6
+        default: 0.20.19
       archive_sha256:
         description: Exact signed runtime ZIP SHA-256
         required: true
-        default: 6fa86013c55522ee290481c228b408d1f6c3f34f2d04bf3c4216a282f7c111c9
+        default: 0c13a81e2e55e9dc106884f3eed82f537024c04e664678774bfdcb154bb7adf3
       core_sha256:
         description: Verified Core SHA-256
         required: true
-        default: 794f60d71d5c1b37f380e43548101ef9b703a2d7331e3d4dc96464bd92a923bf
+        default: c0718052e6ca6b0aa8e0809f3bec4d47462aba598cef721969bccb033c5667d8
       kit_sha256:
         description: Public restoration kit SHA-256
         required: true
-        default: 6ad31f8691b88599dffcd80a6ec1807d51aae1e77b4fdf4ebc19bbe207133f97
+        default: 080381cf71e39852ae4c01f2e12461a63370762d127ed14f86448733d81448dd
 permissions:
   contents: read
 jobs:
@@ -49,7 +49,7 @@ jobs:
           tag=os.environ['RELEASE_TAG']
           if not re.fullmatch('[A-Za-z0-9._-]+',tag):raise ValueError('Invalid validation tag')
           root=Path(os.environ['RUNNER_TEMP'])/'KuzeliaPrepared';root.mkdir();kit=root/'kit';kit.mkdir()
-          url='https://github.com/taisukek13-tech/KuzeliaStudio-Updates/releases/download/'+tag+'/KuzeliaStudio_WindowsValidationKit_v0.18.6.zip'
+          url='https://github.com/taisukek13-tech/KuzeliaStudio-Updates/releases/download/'+tag+'/KuzeliaStudio_WindowsValidationKit_v0.20.19.zip'
           with urllib.request.urlopen(url,timeout=180) as response:data=response.read(10*1024*1024+1)
           if len(data)>10*1024*1024 or hashlib.sha256(data).hexdigest()!=os.environ['KIT_SHA']:raise ValueError('Validation kit digest differs')
           path=root/'kit.zip';path.write_bytes(data)
@@ -63,13 +63,13 @@ jobs:
       - name: Retain exact runtime ZIP for Windows checks and publication
         uses: actions/upload-artifact@v7
         with:
-          path: ${{ runner.temp }}/KuzeliaPrepared/dist/KuzeliaStudio_Update_v0.18.6.zip
+          path: ${{ runner.temp }}/KuzeliaPrepared/dist/KuzeliaStudio_Update_v0.20.19.zip
           archive: false
           retention-days: 1
       - name: Retain setup for Windows checks and publication
         uses: actions/upload-artifact@v7
         with:
-          path: ${{ runner.temp }}/KuzeliaPrepared/dist/KuzeliaStudio_Setup_v0.18.6.exe
+          path: ${{ runner.temp }}/KuzeliaPrepared/dist/KuzeliaStudio_Setup_v0.20.19.exe
           archive: false
           retention-days: 1
       - name: Retain signature, inventory and preparation record
@@ -97,12 +97,12 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
-          name: KuzeliaStudio_Update_v0.18.6.zip
+          name: KuzeliaStudio_Update_v0.20.19.zip
           path: ${{ runner.temp }}/KuzeliaAcceptanceIncoming
           skip-decompress: true
       - uses: actions/download-artifact@v8
         with:
-          name: KuzeliaStudio_Setup_v0.18.6.exe
+          name: KuzeliaStudio_Setup_v0.20.19.exe
           path: ${{ runner.temp }}/KuzeliaAcceptanceIncoming
           skip-decompress: true
       - name: Download and verify the official validation runtime
@@ -114,7 +114,7 @@ jobs:
           $base=Join-Path $env:RUNNER_TEMP 'KuzeliaAcceptance'
           $reports=Join-Path $env:RUNNER_TEMP 'KuzeliaAcceptanceReports'
           New-Item -ItemType Directory -Path $base,$reports -Force|Out-Null
-          $zip=Join-Path $env:RUNNER_TEMP 'KuzeliaAcceptanceIncoming\KuzeliaStudio_Update_v0.18.6.zip'
+          $zip=Join-Path $env:RUNNER_TEMP 'KuzeliaAcceptanceIncoming\KuzeliaStudio_Update_v0.20.19.zip'
           if((Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:ZIP_SHA){throw 'Runtime ZIP digest mismatch'}
           Expand-Archive -LiteralPath $zip -DestinationPath $base
           $appRoot=Join-Path $base 'KuzeliaStudio'
@@ -150,21 +150,22 @@ jobs:
             $checks+=@{requested=$requested;fps=$fps;stream=$stream}
           }}
           @{passed=$true;cases=$checks;scope='Four freshly encoded Windows app outputs; independent bundled ffprobe check. No real GPU available.'}|ConvertTo-Json -Depth 8|Tee-Object -FilePath (Join-Path $env:REPORT_ROOT 'pixel-aspect-acceptance.json')
-      - name: Exercise signed update helper from 0.17.0 and observe restart
+      - name: Exercise signed update helper from 0.20.18 and observe restart
         if: ${{ !cancelled() && steps.runtime.outcome == 'success' }}
         shell: pwsh
         run: |
           $ErrorActionPreference='Stop'
-          $report=@{fromVersion='0.17.0';toVersion=$env:APP_VERSION;passed=$false;uiButtonAndNetworkFlowExercised=$false;limits='Actual old signed helper, parent shutdown, file replacement and restarted window on an ephemeral Windows VM. User PC, update-button path, network and antivirus are separate.'}
+          $report=@{fromVersion='0.20.18';toVersion=$env:APP_VERSION;passed=$false;uiButtonAndNetworkFlowExercised=$false;limits='Actual old signed helper, parent shutdown, file replacement and restarted window on an ephemeral Windows VM. User PC, update-button path, network and antivirus are separate.'}
           $target=$null;$parent=$null;$runner=$null
           try {
             $base=Join-Path $env:RUNNER_TEMP 'KuzeliaUpdateRestart'
             New-Item -ItemType Directory -Path $base -Force|Out-Null
             $oldZip=Join-Path $base 'previous.zip'
-            Invoke-WebRequest -Uri 'https://github.com/taisukek13-tech/KuzeliaStudio-Updates/releases/download/v0.17.0/KuzeliaStudio_Update_v0.17.0.zip' -OutFile $oldZip
-            if((Get-FileHash $oldZip -Algorithm SHA256).Hash.ToLowerInvariant() -ne '1feec87b948b4ddfcc31d4405876ac05f84cc1ba41096d7bbbd927abf0fcb838'){throw 'Previous signed runtime ZIP differs'}
+            Invoke-WebRequest -Uri 'https://github.com/taisukek13-tech/KuzeliaStudio-Updates/releases/download/v0.20.18/KuzeliaStudio_Update_v0.20.18.zip' -OutFile $oldZip
+            if((Get-FileHash $oldZip -Algorithm SHA256).Hash.ToLowerInvariant() -ne '6bc6e91ed1175dd4b72e0bc0c7b72ffb301ffae90af986ed22f8ef1661c40a68'){throw 'Previous signed runtime ZIP differs'}
             Expand-Archive -LiteralPath $oldZip -DestinationPath (Join-Path $base 'previous')
             $target=Join-Path $base 'previous\KuzeliaStudio'
+            if((Get-FileHash (Join-Path $target 'Kuzelia.Core.dll') -Algorithm SHA256).Hash.ToLowerInvariant() -ne '306ef6515136a6f24aa0df4a164edd9eb804b699a5aa7e751e785663b10225bd'){throw 'Previous signed Core differs'}
             $targetExe=Join-Path $target 'KuzeliaStudio.exe'
             $normal=Join-Path $env:LOCALAPPDATA 'KuzeliaStudio.Native'
             $stage=Join-Path $normal ('Updates\'+[Guid]::NewGuid().ToString('N'))
@@ -221,7 +222,7 @@ jobs:
         run: |
           $ErrorActionPreference='Stop'
           if($env:SETUP_SHA -notmatch '^[a-f0-9]{64}$'){throw 'Invalid setup SHA-256'}
-          $setup=Join-Path $env:RUNNER_TEMP 'KuzeliaAcceptanceIncoming\KuzeliaStudio_Setup_v0.18.6.exe'
+          $setup=Join-Path $env:RUNNER_TEMP 'KuzeliaAcceptanceIncoming\KuzeliaStudio_Setup_v0.20.19.exe'
           if((Get-FileHash $setup -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:SETUP_SHA){throw 'Setup digest mismatch'}
           $target=Join-Path $env:RUNNER_TEMP 'KuzeliaInstallTest'
           $normal=Join-Path $env:LOCALAPPDATA 'KuzeliaStudio.Native'
@@ -251,6 +252,3 @@ jobs:
           path: ${{ runner.temp }}/KuzeliaAcceptanceReports
           retention-days: 1
           if-no-files-found: warn
-
-
-
