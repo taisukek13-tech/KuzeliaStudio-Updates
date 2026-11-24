@@ -8,67 +8,107 @@ name: Windows acceptance
 permissions:
   contents: read
 jobs:
-  observe:
+  support:
     if: github.repository == 'taisukek13-tech/KuzeliaStudio-Updates' && github.ref == 'refs/heads/validation-v0.20.24-c1'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      KIT_SHA: c73ff69f5ca03ea0cf00ddb4d24f8679b49ae37de9fe13ef5a862c507bae6fc1
+    steps:
+    - name: Verify the offline diagnostic and the official v24 app
+      shell: pwsh
+      run: |
+        $ErrorActionPreference='Stop'
+        $root=Join-Path $env:RUNNER_TEMP 'exit-support-validation'
+        $report=Join-Path $root 'report';$code=Join-Path $root 'code'
+        $null=New-Item -ItemType Directory -Path $code,$report -Force
+        $bundle=Join-Path $root 'bundle.zip'
+        $official=Join-Path $root 'release.zip'
+        $kitUrl='https://raw.githubusercontent.com/'+$env:GITHUB_REPOSITORY+'/'+$env:GITHUB_SHA+'/.github/workflows/exit-support-validation-1.zip'
+        & curl.exe --fail --silent --show-error --location --retry 2 --max-time 60 -o $bundle $kitUrl
+        if($LASTEXITCODE -ne 0 -or (Get-FileHash $bundle).Hash -ne $env:KIT_SHA){throw 'Wrong diagnostic kit'}
+        [IO.Compression.ZipFile]::ExtractToDirectory($bundle,$code)
+        & curl.exe --fail --silent --show-error --location --retry 2 --max-time 240 -o $official https://github.com/taisukek13-tech/KuzeliaStudio-Updates/releases/download/v0.20.24/KuzeliaStudio_Update_v0.20.24.zip
+        if($LASTEXITCODE -ne 0 -or (Get-FileHash $official).Hash -ne '249ac3ba16e1c8a64599e48c2a62df4146819d8843be41cd359a0fbdb7f6c64d'){throw 'Wrong official v24'}
+        [IO.Compression.ZipFile]::ExtractToDirectory($official,$root)
+        $app=Join-Path $root 'KuzeliaStudio'
+        if((Get-FileHash (Join-Path $app 'Kuzelia.Core.dll')).Hash -ne 'cbd04b705f7c7fbdddd7e38de28ef3a240590d8681825cae78f2ab6640e60cbe'){throw 'Wrong installed Core'}
+        "APP_ROOT=$app" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+        "REPORT_ROOT=$report" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+        "CHECK_DIR=$code" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+    - name: Exercise six real-app, residual-process, no-launch and recovery observation cases
+      shell: pwsh
+      run: |
+        $ErrorActionPreference='Stop'
+        & (Join-Path $env:CHECK_DIR 'windows-check.ps1')
+        $result=Get-Content (Join-Path $env:REPORT_ROOT 'exit-support-check.json') -Raw | ConvertFrom-Json
+        if(!$result.allPassed -or @($result.cases.PSObject.Properties).Count -ne 6){throw 'The support diagnostic did not pass'}
+    - name: Save the six test outcomes
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: Kuzelia-Exit-Support-${{ github.run_id }}
+        path: ${{ runner.temp }}/exit-support-validation/report/*.json
+        retention-days: 3
+        if-no-files-found: warn
+  sustained:
+    if: github.repository == 'taisukek13-tech/KuzeliaStudio-Updates' && github.ref == 'refs/heads/validation-v0.20.24-c1'
+    runs-on: windows-latest
+    timeout-minutes: 18
+    env:
+      KIT_SHA: f2be64371710870a605c725ba9e7ec72d9a7a4472fd1dd6b06db09d5abc13fe8
+      OBSERVATION_ORDER: ${{ matrix.order }}
+    steps:
+    - name: Use the signed Windows .NET runtime
+      uses: actions/setup-dotnet@v5
+      with:
+        dotnet-version: 10.0.403
+    - name: Verify official v24 and freeze CPU, display adapter and memory context
+      shell: pwsh
+      run: |
+        $ErrorActionPreference='Stop'
+        $root=Join-Path $env:RUNNER_TEMP 'sustained-close-study'
+        $report=Join-Path $root 'report';$code=Join-Path $root 'code'
+        $null=New-Item -ItemType Directory -Path $code,$report -Force
+        $bundle=Join-Path $root 'bundle.zip'
+        $official=Join-Path $root 'release.zip'
+        $kitUrl='https://raw.githubusercontent.com/'+$env:GITHUB_REPOSITORY+'/'+$env:GITHUB_SHA+'/.github/workflows/exit-sustained-study-1.zip'
+        & curl.exe --fail --silent --show-error --location --retry 2 --max-time 60 -o $bundle $kitUrl
+        if($LASTEXITCODE -ne 0 -or (Get-FileHash $bundle).Hash -ne $env:KIT_SHA){throw 'Wrong diagnostic kit'}
+        [IO.Compression.ZipFile]::ExtractToDirectory($bundle,$code)
+        & curl.exe --fail --silent --show-error --location --retry 2 --max-time 240 -o $official https://github.com/taisukek13-tech/KuzeliaStudio-Updates/releases/download/v0.20.24/KuzeliaStudio_Update_v0.20.24.zip
+        if($LASTEXITCODE -ne 0 -or (Get-FileHash $official).Hash -ne '249ac3ba16e1c8a64599e48c2a62df4146819d8843be41cd359a0fbdb7f6c64d'){throw 'Wrong official v24'}
+        [IO.Compression.ZipFile]::ExtractToDirectory($official,$root)
+        $app=Join-Path $root 'KuzeliaStudio'
+        if((Get-FileHash (Join-Path $app 'Kuzelia.Core.dll')).Hash -ne 'cbd04b705f7c7fbdddd7e38de28ef3a240590d8681825cae78f2ab6640e60cbe'){throw 'Wrong installed Core'}
+        "APP_ROOT=$app" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+        "REPORT_ROOT=$report" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+        "CHECK_DIR=$code" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+        @{os=[Environment]::OSVersion.VersionString;cpu=@(Get-CimInstance Win32_Processor | Select-Object Name,NumberOfLogicalProcessors,NumberOfCores);memory=(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory;display=@(Get-CimInstance Win32_VideoController|Select-Object Name,DriverVersion,VideoProcessor);release='0.20.24';sha='249ac3ba16e1c8a64599e48c2a62df4146819d8843be41cd359a0fbdb7f6c64d'} | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $report 'machine.json')
+        Start-Sleep -Seconds 20
+    - name: Measure ordinary close and a no-launch control for three minutes each
+      shell: pwsh
+      run: |
+        $ErrorActionPreference='Stop'
+        & dotnet (Join-Path $env:CHECK_DIR 'ExitStudyLong.dll') run $env:APP_ROOT $env:APP_ROOT $env:REPORT_ROOT $env:OBSERVATION_ORDER
+        if($LASTEXITCODE -ne 0){throw 'The sustained observation encountered an error'}
+        $r=Get-Content (Join-Path $env:REPORT_ROOT 'study.json') -Raw | ConvertFrom-Json
+        if($r.status -ne 'finished' -or $r.scenarios.Count -lt 1){throw 'Failed to acquire the study'}
+        foreach($s in $r.scenarios){
+         if($s.finishedMs-$s.closeSentMs -lt 180000){throw 'Incomplete post-close time series'}
+         Write-Output ("{0} observed {1} s after close, primary alive={2}" -f $s.name,([math]::Round(($s.finishedMs-$s.closeSentMs)/1000,1)),$s.primaryAliveAfterWindow)
+        }
+    - name: Preserve Windows, process and focus samples for both conditions
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: Kuzelia-Sustained-${{ matrix.order }}-${{ github.run_id }}
+        path: ${{ runner.temp }}/sustained-close-study/report/*.json
+        retention-days: 3
+        if-no-files-found: warn
     strategy:
       fail-fast: false
       matrix:
         order:
-        - A
-        - B
-        - duplicate
-    runs-on: windows-latest
-    timeout-minutes: 20
-    env:
-      OBSERVATION_ORDER: ${{ matrix.order }}
-      PROBE_SHA: a13639a4f2fd46475406c71ff3b7895f402ff6ebb3987d1045e5f4f24bb836ad
-    steps:
-    - name: Use official .NET runtime
-      uses: actions/setup-dotnet@v5
-      with:
-        dotnet-version: 10.0.403
-    - name: Fetch both official versions and pin the binary-only diagnostic
-      shell: pwsh
-      run: |
-        $ErrorActionPreference='Stop'
-        $root=Join-Path $env:RUNNER_TEMP 'regular-close-study'
-        $bin=Join-Path $root 'probe'; $report=Join-Path $root 'evidence'
-        $null=New-Item -Path $bin,$report -ItemType Directory -Force
-        $bundle=Join-Path $root 'probe.zip'
-        & curl.exe --fail --silent --show-error --location --retry 2 --max-time 45 --output $bundle ('https://raw.githubusercontent.com/'+$env:GITHUB_REPOSITORY+'/'+$env:GITHUB_SHA+'/.github/workflows/kuzelia-close-probe-1.zip')
-        if($LASTEXITCODE -ne 0 -or (Get-FileHash -LiteralPath $bundle).Hash -ne $env:PROBE_SHA){throw 'Unverified close diagnostic'}
-        [IO.Compression.ZipFile]::ExtractToDirectory($bundle,$bin)
-        $releases=@(@{v='0.20.23';sha='8da148f191f792de09f37b606ac00b55587059c012103f3c2d0e0f6fcb019d20';core='a7406c7f6fc0e5ecf1bc11ccb660f986bf240d6c8f07063ee4601245bca15b8c'},@{v='0.20.24';sha='249ac3ba16e1c8a64599e48c2a62df4146819d8843be41cd359a0fbdb7f6c64d';core='cbd04b705f7c7fbdddd7e38de28ef3a240590d8681825cae78f2ab6640e60cbe'})
-        $running=@()
-        foreach($rel in $releases){
-         $v=$rel.v;$zip=Join-Path $root ($v+'.zip');$url='https://github.com/taisukek13-tech/KuzeliaStudio-Updates/releases/download/v'+$v+'/KuzeliaStudio_Update_v'+$v+'.zip'
-         $si=[Diagnostics.ProcessStartInfo]::new('curl.exe');$si.UseShellExecute=$false;foreach($x in @('--fail','--silent','--show-error','--location','--retry','2','--max-time','240','--output',$zip,$url)){$si.ArgumentList.Add($x)}
-         $running+=[Diagnostics.Process]::Start($si)
-        }
-        foreach($p in $running){$p.WaitForExit();if($p.ExitCode -ne 0){throw 'Could not fetch official runtime'};$p.Dispose()}
-        foreach($rel in $releases){
-         $v=$rel.v;$zip=Join-Path $root ($v+'.zip');if((Get-FileHash $zip).Hash -ne $rel.sha){throw "Wrong release $v"};$dir=Join-Path $root $v;[IO.Compression.ZipFile]::ExtractToDirectory($zip,$dir)
-         $app=Join-Path $dir 'KuzeliaStudio';if((Get-FileHash (Join-Path $app 'Kuzelia.Core.dll')).Hash -ne $rel.core){throw 'Wrong official Core'}
-         $name=if($v -eq '0.20.23'){'OLD_APP'}else{'NEW_APP'};"$name=$app" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-        }
-        @{os=[Environment]::OSVersion.VersionString;cpu=@(Get-CimInstance Win32_Processor | Select-Object Name,NumberOfLogicalProcessors,NumberOfCores);memory=(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory;display=@(Get-CimInstance Win32_VideoController|Select-Object Name);release=$releases} | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $report 'machine.json')
-        "DIAGNOSTIC_DIR=$bin" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-        "EVIDENCE_DIR=$report" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-        Start-Sleep -Seconds 20
-    - name: Observe real titlebar close, process lifetime, foreground timing and whole-system activity
-      shell: pwsh
-      run: |
-        $ErrorActionPreference='Stop'
-        & dotnet (Join-Path $env:DIAGNOSTIC_DIR 'ExitStudy.dll') run $env:OLD_APP $env:NEW_APP $env:EVIDENCE_DIR $env:OBSERVATION_ORDER
-        if($LASTEXITCODE -ne 0){throw 'The observation program exited abnormally'}
-        $r=Get-Content (Join-Path $env:EVIDENCE_DIR 'study.json') -Raw | ConvertFrom-Json
-        if($r.status -ne 'finished' -or $r.front.Count -lt 400 -or $r.samples.Count -lt 40 -or $r.scenarios.Count -lt 1){throw 'Incomplete close observations'}
-        foreach($s in $r.scenarios){Write-Output ("{0}: primaryPID={1} exitMs={2} stillAlive={3} duplicateAlive={4} duplicateDialog={5} duplicateExitedAfterOK={6}" -f $s.name,$s.primaryPid,$s.rootExitMs,$s.primaryAliveAfterWindow,$s.duplicateAliveAfterWindow,$s.duplicateWindowAfterClose,$s.duplicateExitedAfterOk)}
-    - name: Save raw system, process and foreground time series
-      if: always()
-      uses: actions/upload-artifact@v7
-      with:
-        name: Kuzelia-Idle-Close-${{ matrix.order }}-${{ github.run_id }}
-        path: ${{ runner.temp }}/regular-close-study/evidence/*.json
-        if-no-files-found: warn
-        retention-days: 3
+        - long-control-first
+        - long-app-first
