@@ -11,7 +11,7 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 8
     env:
-      BUNDLE_SHA: 8b1a1fd94736864e53803d63e0acb493fe76cfde7a42a87bc1f24f7afac9a1be
+      BUNDLE_SHA: 28380420cbd8a6c5a243fe7d967a299f7f4d1253750600bd69f27b2f4ff0d3ca
       BASE_DLL_SHA: fd05cc07833bd0a1ccf2bccaf0953b183bf4e46e788602f045930264df3d7ea3
       CANDIDATE_DLL_SHA: 0d72e554d7a63f36fae3cabc3e7ebbefce2088158780962b183312139f143bb3
       FULL_SHA: 249ac3ba16e1c8a64599e48c2a62df4146819d8843be41cd359a0fbdb7f6c64d
