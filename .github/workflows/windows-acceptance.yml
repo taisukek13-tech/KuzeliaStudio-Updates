@@ -5,238 +5,70 @@ name: Windows acceptance
     - validation-v0.20.24-c1
     paths:
     - .github/workflows/windows-acceptance.yml
-  workflow_dispatch: {}
 permissions:
   contents: read
-  actions: read
 jobs:
-  windows:
-    if: github.repository == 'taisukek13-tech/KuzeliaStudio-Updates' && github.event.repository.private == false && github.ref == 'refs/heads/validation-v0.20.24-c1'
+  observe:
+    if: github.repository == 'taisukek13-tech/KuzeliaStudio-Updates' && github.ref == 'refs/heads/validation-v0.20.24-c1'
+    strategy:
+      fail-fast: false
+      matrix:
+        order:
+        - A
+        - B
+        - duplicate
     runs-on: windows-latest
-    timeout-minutes: 26
+    timeout-minutes: 20
     env:
-      RELEASE_TAG: validation-v0.20.24-c1
-      ZIP_SHA: 249ac3ba16e1c8a64599e48c2a62df4146819d8843be41cd359a0fbdb7f6c64d
-      CORE_SHA: cbd04b705f7c7fbdddd7e38de28ef3a240590d8681825cae78f2ab6640e60cbe
-      APP_VERSION: 0.20.24
-      BASE_ZIP_SHA: 8da148f191f792de09f37b606ac00b55587059c012103f3c2d0e0f6fcb019d20
-      BASE_CORE_SHA: a7406c7f6fc0e5ecf1bc11ccb660f986bf240d6c8f07063ee4601245bca15b8c
-      PROBE_SHA: f443bc2e6d66c3d2c296bbc6da8407f36571b1c403290595fed0f4acc3833db5
+      OBSERVATION_ORDER: ${{ matrix.order }}
+      PROBE_SHA: a13639a4f2fd46475406c71ff3b7895f402ff6ebb3987d1045e5f4f24bb836ad
     steps:
-    - name: Check signed runtime and diagnostics against successful run 47
-      id: prepare
-      shell: python
-      env:
-        GH_TOKEN: ${{ github.token }}
-      run: |
-        """Reuse the pinned results of the successful prepare job in acceptance run 47."""
-        import base64
-        import hashlib
-        import io
-        import json
-        import os
-        from pathlib import Path
-        import urllib.request
-        import zipfile
-
-        REPO = 'taisukek13-tech/KuzeliaStudio-Updates'
-        RUN = 45310245700
-        REPOSITORY_ID = 1440122794
-        COMMIT = '15a674c03625e9e6225558d3161df8191d9ae6d2'
-        BRANCH = 'validation-v0.20.24-c1'
-        PREPARE_JOB = 138163875249
-        RUNTIME = 'KuzeliaStudio_Update_v0.20.24.zip'
-        SETUP = 'KuzeliaStudio_Setup_v0.20.24.exe'
-        PROBE = 'qa-probes.zip'
-        META = 'Kuzelia-Prepared-Metadata-45310245700'
-        PINNED = {
-            RUNTIME: (14882533434, 558331806, '249ac3ba16e1c8a64599e48c2a62df4146819d8843be41cd359a0fbdb7f6c64d'),
-            SETUP: (14883530835, 518760140, 'eab7b5cd232f4e90c4af2761725cd659f904c72cb41901f8c639d78c21a04d70'),
-            PROBE: (14883151324, 61797, 'f443bc2e6d66c3d2c296bbc6da8407f36571b1c403290595fed0f4acc3833db5'),
-            META: (14883446078, 551, '5c7aaf0ce0a221c5009b37002ddd1b1e0d753ddb6072189d37839a32a766751e'),
-        }
-        # Exact public, 551-byte metadata archive from #47. Check its bytes against the
-        # digest currently returned for its original GitHub Actions artifact before use.
-        ORIGINAL_METADATA_ARCHIVE = 'UEsDBBQACAAIAGYReF0AAAAAAAAAAAAAAAAXAAAAcHJlcGFyZWQtYXJ0aWZhY3RzLmpzb25Nj8tqw0AMRff5CuN1F/PQaDRZltIfKO1eI2laQ+oEZxwIpf9ecKDJ+sA59/7shmFc1rlP3/b2xSHhuB/GAIUlVvZoXogRUikGJIExaAMPSL4oEcRq4EVjKuxa1ZobCoKOTw/a52u387gfUqIYPTnc4Nn6eroXjWuuSTTE0MCKE+AWMvockiim0ooDyUEq+OJ8I8FYNJMEzw40u/Eu/e95yug8uA3JcXk4KFUd1OxSy5JbVVXNFkktkLXIAVwqTgnJU0jClqkFrojgDJ1Uu+Wm+WJzPy7X1+mwJSnAbcf0OXNfF/uwZWqT6bgf+rLaBk/LdOFuL9z5/XQ4sm648eFsu98/UEsHCO4TpcwDAQAAkAEAAFBLAwQUAAgACAAvEXhdAAAAAAAAAAAAAAAAEwAAAGluc3RhbGxlci1idWlsZC5sb2cDAFBLBwgAAAAAAgAAAAAAAABQSwECLQMUAAgACABmEXhd7hOlzAMBAACQAQAAFwAAAAAAAAAAACAApIEAAAAAcHJlcGFyZWQtYXJ0aWZhY3RzLmpzb25QSwECLQMUAAgACAAvEXhdAAAAAAIAAAAAAAAAEwAAAAAAAAAAACAApIFIAQAAaW5zdGFsbGVyLWJ1aWxkLmxvZ1BLBQYAAAAAAgACAIYAAACLAQAAAAA='
-        CORE = 'cbd04b705f7c7fbdddd7e38de28ef3a240590d8681825cae78f2ab6640e60cbe'
-
-        def check(valid, message):
-            if not valid:
-                raise ValueError(message)
-
-        def get(endpoint):
-            req = urllib.request.Request('https://api.github.com/repos/'+REPO+'/actions/'+endpoint,
-                headers={'User-Agent':'Kuzelia-Previous-Prepare-Verification','Accept':'application/vnd.github+json','Cache-Control':'no-cache'})
-            with urllib.request.urlopen(req, timeout=35) as response:
-                return json.load(response)
-
-        def main():
-            run = get(f'runs/{RUN}')
-            check(run['id']==RUN and run['run_number']==47 and run['head_sha']==COMMIT and run['head_branch']==BRANCH
-                  and run['repository']['id']==REPOSITORY_ID and run['head_repository']['id']==REPOSITORY_ID
-                  and run['repository']['full_name']==REPO and run['path']=='.github/workflows/windows-acceptance.yml', 'Unexpected original workflow run')
-            jobs = get(f'runs/{RUN}/jobs?per_page=100')['jobs']
-            prepare = next(j for j in jobs if j['id']==PREPARE_JOB)
-            check(prepare['name']=='prepare' and prepare['status']=='completed' and prepare['conclusion']=='success'
-                  and prepare['run_id']==RUN and prepare['head_sha']==COMMIT, 'Original prepare job did not pass')
-            original = get(f'runs/{RUN}/artifacts?per_page=100')['artifacts']
-            records = {}
-            for name,(ident,size,digest) in PINNED.items():
-                matches = [a for a in original if a['id']==ident and a['name']==name]
-                check(len(matches)==1, 'Missing pinned original artifact: '+name)
-                a = matches[0]
-                w = a['workflow_run']
-                check(not a['expired'] and a['size_in_bytes']==size and a['digest']=='sha256:'+digest
-                      and w['repository_id']==REPOSITORY_ID and w['head_repository_id']==REPOSITORY_ID
-                      and w['id']==RUN and w['head_sha']==COMMIT and w['head_branch']==BRANCH,
-                      'Original artifact identity or bytes differ: '+name)
-                records[name] = {'id':ident,'bytes':size,'sha256':digest}
-            blob = base64.b64decode(ORIGINAL_METADATA_ARCHIVE, validate=True)
-            check(len(blob)==records[META]['bytes'] and hashlib.sha256(blob).hexdigest()==records[META]['sha256'], 'Prepare record disagrees with original artifact')
-            with zipfile.ZipFile(io.BytesIO(blob)) as z:
-                check(set(z.namelist())=={'prepared-artifacts.json','installer-build.log'},'Unexpected original preparation metadata')
-                report=json.loads(z.read('prepared-artifacts.json'))
-            check(report['setupSha256']==records[SETUP]['sha256'] and report['setupBytes']==records[SETUP]['bytes']
-                  and report['runtimeSha256']==records[RUNTIME]['sha256'] and report['runtimeBytes']==records[RUNTIME]['bytes']
-                  and report['coreSha256']==CORE and report['signatureVerified'] is True
-                  and report['privateDataUploaded'] is False and report['inventoryFiles']==824, 'Wrong original preparation evidence')
-            report['reusedPreparation']={'sourceRun':RUN,'sourceRunNumber':47,'sourcePrepareJob':PREPARE_JOB,'sourceCommit':COMMIT,
-                'sourceRunStatus':run['status'],'sourceRunConclusion':run['conclusion'],'sourcePrepareConclusion':prepare['conclusion'],'sourceArtifacts':records}
-            dist=Path(os.environ['RUNNER_TEMP'])/'KuzeliaPrepared/dist'
-            dist.mkdir(exist_ok=True,parents=True)
-            (dist/'prepared-artifacts.json').write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
-            with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as out:
-                out.write('setup_sha='+report['setupSha256']+'\n')
-            print('Verified original prepare job, artifact IDs and digests for run',RUN)
-
-        if __name__=='__main__':
-            main()
-    - uses: actions/download-artifact@v8
-      with:
-        name: KuzeliaStudio_Update_v0.20.24.zip
-        path: ${{ runner.temp }}/KuzeliaAcceptanceIncoming
-        skip-decompress: true
-        run-id: 45310245700
-        github-token: ${{ github.token }}
-    - uses: actions/download-artifact@v8
-      with:
-        name: qa-probes.zip
-        path: ${{ runner.temp }}/KuzeliaAcceptanceIncoming
-        skip-decompress: true
-        run-id: 45310245700
-        github-token: ${{ github.token }}
-    - name: Verify and extract the exact signed candidate
-      id: runtime
-      shell: pwsh
-      run: |
-        $ErrorActionPreference='Stop'
-        if($env:RELEASE_TAG -notmatch '^[A-Za-z0-9._-]+$' -or $env:APP_VERSION -notmatch '^\d+\.\d+\.\d+$' -or $env:ZIP_SHA -notmatch '^[a-f0-9]{64}$' -or $env:CORE_SHA -notmatch '^[a-f0-9]{64}$'){throw 'Invalid validation inputs'}
-        $base=Join-Path $env:RUNNER_TEMP 'KuzeliaAcceptance'
-        $reports=Join-Path $env:RUNNER_TEMP 'KuzeliaAcceptanceReports'
-        New-Item -ItemType Directory -Path $base,$reports -Force|Out-Null
-        $zip=Join-Path $env:RUNNER_TEMP 'KuzeliaAcceptanceIncoming\KuzeliaStudio_Update_v0.20.24.zip'
-        if((Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:ZIP_SHA){throw 'Runtime ZIP digest mismatch'}
-        [IO.Compression.ZipFile]::ExtractToDirectory($zip, $base)
-        $appRoot=Join-Path $base 'KuzeliaStudio'
-        if((Get-FileHash (Join-Path $appRoot 'Kuzelia.Core.dll') -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:CORE_SHA){throw 'Core digest mismatch'}
-        'APP_ROOT='+$appRoot|Out-File $env:GITHUB_ENV -Append -Encoding utf8
-        'REPORT_ROOT='+$reports|Out-File $env:GITHUB_ENV -Append -Encoding utf8
-        $hardware=@{os=[Environment]::OSVersion.VersionString;cpu=@(Get-CimInstance Win32_Processor|Select-Object Name,NumberOfCores,NumberOfLogicalProcessors);memoryBytes=(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory;graphics=@(Get-CimInstance Win32_VideoController|Select-Object Name,DriverVersion);authenticode=(Get-AuthenticodeSignature (Join-Path $appRoot 'KuzeliaStudio.exe')).Status.ToString();limits='Standard hosted Windows VM, not the user PC or RTX benchmark.'}
-        $hardware|ConvertTo-Json -Depth 8|Set-Content (Join-Path $reports 'hardware.json') -Encoding utf8
-    - name: Fetch and pin the official previous runtime once
-      id: baseline
-      shell: pwsh
-      run: |
-        $ErrorActionPreference = 'Stop'
-        $baseFolder = Join-Path $env:RUNNER_TEMP 'KuzeliaOfficialBaseline'
-        $null = New-Item -ItemType Directory -Path $baseFolder
-        $zip = Join-Path $baseFolder 'official-v23.zip'
-        & curl.exe --fail --silent --show-error --location --retry 3 --max-time 240 --output $zip 'https://github.com/taisukek13-tech/KuzeliaStudio-Updates/releases/download/v0.20.23/KuzeliaStudio_Update_v0.20.23.zip'
-        if ($LASTEXITCODE -ne 0) { throw 'Could not download the official v0.20.23 runtime' }
-        if ((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash -ne $env:BASE_ZIP_SHA) { throw 'Official baseline archive differs' }
-        [IO.Compression.ZipFile]::ExtractToDirectory($zip, $baseFolder)
-        $baseRoot = Join-Path $baseFolder 'KuzeliaStudio'
-        if ((Get-FileHash (Join-Path $baseRoot 'Kuzelia.Core.dll')).Hash -ne $env:BASE_CORE_SHA) { throw 'Official baseline Core differs' }
-        $baseVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $baseRoot 'KuzeliaStudio.dll')).FileVersion
-        if ($baseVersion -ne '0.20.23.0') { throw "Unexpected baseline version $baseVersion" }
-        "BASE_ROOT=$baseRoot" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-    - name: Use the .NET 10 SDK for the independent portable test probes
+    - name: Use official .NET runtime
       uses: actions/setup-dotnet@v5
       with:
         dotnet-version: 10.0.403
-    - name: Stage pinned binary-only tests outside both applications
-      id: probes
+    - name: Fetch both official versions and pin the binary-only diagnostic
       shell: pwsh
       run: |
-        $ErrorActionPreference = 'Stop'
-        $bundle = Join-Path $env:RUNNER_TEMP 'KuzeliaAcceptanceIncoming/qa-probes.zip'
-        if ((Get-FileHash $bundle).Hash -ne $env:PROBE_SHA) { throw 'Wrong portable diagnostics' }
-        $bin = Join-Path $env:RUNNER_TEMP 'KuzeliaPortableQA'
+        $ErrorActionPreference='Stop'
+        $root=Join-Path $env:RUNNER_TEMP 'regular-close-study'
+        $bin=Join-Path $root 'probe'; $report=Join-Path $root 'evidence'
+        $null=New-Item -Path $bin,$report -ItemType Directory -Force
+        $bundle=Join-Path $root 'probe.zip'
+        & curl.exe --fail --silent --show-error --location --retry 2 --max-time 45 --output $bundle ('https://raw.githubusercontent.com/'+$env:GITHUB_REPOSITORY+'/'+$env:GITHUB_SHA+'/.github/workflows/kuzelia-close-probe-1.zip')
+        if($LASTEXITCODE -ne 0 -or (Get-FileHash -LiteralPath $bundle).Hash -ne $env:PROBE_SHA){throw 'Unverified close diagnostic'}
         [IO.Compression.ZipFile]::ExtractToDirectory($bundle,$bin)
-        Copy-Item -LiteralPath (Join-Path $env:BASE_ROOT 'Kuzelia.Core.dll') -Destination $bin
-        "QA_BIN=$bin" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-        $compressed = Join-Path $env:RUNNER_TEMP 'qa-foreground-r4.gz'
-        $url = 'https://raw.githubusercontent.com/'+$env:GITHUB_REPOSITORY+'/'+$env:GITHUB_SHA+'/.github/workflows/qa-foreground-r4.gz'
-        & curl.exe -fLsS --retry 2 --max-time 40 -o $compressed $url
-        if ($LASTEXITCODE -ne 0 -or (Get-FileHash -LiteralPath $compressed).Hash -ne $env:PROBE_R4_GZ_SHA) { throw 'Incorrect foreground test revision' }
-        $stream=[IO.File]::OpenRead($compressed)
-        $gzip=[IO.Compression.GZipStream]::new($stream,[IO.Compression.CompressionMode]::Decompress)
-        $dst=Join-Path $bin 'ContentionProbe.dll'
-        $output=[IO.File]::Create($dst)
-        try { $gzip.CopyTo($output) } finally { $output.Dispose(); $gzip.Dispose(); $stream.Dispose() }
-        if ((Get-FileHash -LiteralPath $dst).Hash -ne $env:PROBE_R4_DLL_SHA) { throw 'Incorrect expanded diagnostic' }
-      env:
-        PROBE_R4_GZ_SHA: 92736b0bd4e7bbe2753188172ccda47601e1b9816cec454b02b540738fcafab4
-        PROBE_R4_DLL_SHA: 70d7ab813922eee1e1f48178a93c20e0c191107fcd5f92ab78d87fa3e6f6ea30
-    - name: Start the foreground load after the packaged Whisper process has loaded the model
-      id: contention
-      timeout-minutes: 12
+        $releases=@(@{v='0.20.23';sha='8da148f191f792de09f37b606ac00b55587059c012103f3c2d0e0f6fcb019d20';core='a7406c7f6fc0e5ecf1bc11ccb660f986bf240d6c8f07063ee4601245bca15b8c'},@{v='0.20.24';sha='249ac3ba16e1c8a64599e48c2a62df4146819d8843be41cd359a0fbdb7f6c64d';core='cbd04b705f7c7fbdddd7e38de28ef3a240590d8681825cae78f2ab6640e60cbe'})
+        $running=@()
+        foreach($rel in $releases){
+         $v=$rel.v;$zip=Join-Path $root ($v+'.zip');$url='https://github.com/taisukek13-tech/KuzeliaStudio-Updates/releases/download/v'+$v+'/KuzeliaStudio_Update_v'+$v+'.zip'
+         $si=[Diagnostics.ProcessStartInfo]::new('curl.exe');$si.UseShellExecute=$false;foreach($x in @('--fail','--silent','--show-error','--location','--retry','2','--max-time','240','--output',$zip,$url)){$si.ArgumentList.Add($x)}
+         $running+=[Diagnostics.Process]::Start($si)
+        }
+        foreach($p in $running){$p.WaitForExit();if($p.ExitCode -ne 0){throw 'Could not fetch official runtime'};$p.Dispose()}
+        foreach($rel in $releases){
+         $v=$rel.v;$zip=Join-Path $root ($v+'.zip');if((Get-FileHash $zip).Hash -ne $rel.sha){throw "Wrong release $v"};$dir=Join-Path $root $v;[IO.Compression.ZipFile]::ExtractToDirectory($zip,$dir)
+         $app=Join-Path $dir 'KuzeliaStudio';if((Get-FileHash (Join-Path $app 'Kuzelia.Core.dll')).Hash -ne $rel.core){throw 'Wrong official Core'}
+         $name=if($v -eq '0.20.23'){'OLD_APP'}else{'NEW_APP'};"$name=$app" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+        }
+        @{os=[Environment]::OSVersion.VersionString;cpu=@(Get-CimInstance Win32_Processor | Select-Object Name,NumberOfLogicalProcessors,NumberOfCores);memory=(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory;display=@(Get-CimInstance Win32_VideoController|Select-Object Name);release=$releases} | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $report 'machine.json')
+        "DIAGNOSTIC_DIR=$bin" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+        "EVIDENCE_DIR=$report" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+        Start-Sleep -Seconds 20
+    - name: Observe real titlebar close, process lifetime, foreground timing and whole-system activity
       shell: pwsh
       run: |
-        $ErrorActionPreference = 'Stop'
-        $folder = Join-Path $env:RUNNER_TEMP 'KuzeliaForegroundStudy'
-        $probe = Join-Path $env:QA_BIN 'ContentionProbe.dll'
-        & dotnet $probe driver $env:BASE_ROOT $env:APP_ROOT $folder 6 3 active-speech
-        if ($LASTEXITCODE -ne 0) { throw "Independent contention probe failed ($LASTEXITCODE)" }
-        $source = Join-Path $folder 'contention.json'
-        Copy-Item -LiteralPath $source -Destination (Join-Path $env:REPORT_ROOT 'foreground-study.json')
-        $result = Get-Content -LiteralPath $source -Raw | ConvertFrom-Json
-        if (!$result.windows -or $result.runs.Count -ne 9 -or $result.quality.transcripts.Count -ne 1) { throw 'Incomplete contention or media equivalence results' }
-        foreach ($row in $result.runs) {
-            $f = $row.foreground
-            Write-Output ("{0}/{1} win32={2}; received={3}; frames={4}; inherited={5}; effective={6}; focus={7}; late={8}" -f $row.round,$row.scenario,$f.windowsMessageQueue,$f.delivered,$f.frames,$f.inheritedPriority,$f.priority,$f.focusFraction,$f.missed)
-            if (!$f.windowsMessageQueue) { throw "Missing Win32 queue in $($row.scenario)" }
-            if ($f.delivered -ne 360) { throw "Received $($f.delivered) ticks under $($row.scenario), expected 360" }
-            if ($f.frames -le 0) { throw "No independent transforms under $($row.scenario)" }
-            if ($f.priority -ne 'Normal') { throw "Expected Normal, observed $($f.priority) ($($row.scenario))" }
-            if ($row.operation -eq 'idle') { continue }
-            $expected = if ($row.version -eq 'before') { $env:BASE_CORE_SHA } else { $env:CORE_SHA }
-            if ($row.product.coreHash -ne $expected) { throw "Different runtime in $($row.scenario)" }
-            if ($row.product.durationsMs.Count -lt 1 -or $row.native.samples.Count -lt 2 -or $row.native.workers.Count -lt 1) { throw "Missing native worker, timings or CPU/memory measurements in $($row.scenario)" }
-            if ($row.operation -eq 'speech' -and $row.product.backends.Count -lt 1) { throw 'Missing real speech inference' }
-        }
-
-        foreach ($row in $result.runs) {
-            if ($row.operation -eq 'idle') { continue }
-            $work=$row.product
-            Write-Output ("{0}/{1} startedMs={2:N2}; firstNativeSeconds={3:N2}; nativeOverlapSeconds={4:N2} / {5}; CPU samples={6}" -f $row.round,$row.scenario,$work.startDelayMs,$work.firstWorkerSeconds,$work.nativeOverlapSeconds,$result.duration,$work.cpuSamples)
-            if ($work.startDelayMs -gt 500 -or $work.startDelayMs -lt 0 -or $work.firstWorkerSeconds -lt 0 -or $work.firstWorkerSeconds -gt 0.1 -or $work.nativeOverlapSeconds -lt 5.5 -or $work.cpuSamples -lt 3 -or $work.nativePid -le 0 -or $work.cpuAtFenceMs -lt 500 -or $work.warmWorkingSetBytes -lt 134217728 -or $work.processPriority -ne 'Normal') { throw "Insufficient synchronized native workload or samples for $($row.scenario)" }
-        }
-    - name: Keep per-trial measurements when an assertion fails
-      shell: pwsh
-      if: ${{ failure() && steps.contention.outcome == 'failure' }}
-      run: |
-        $src=Join-Path $env:RUNNER_TEMP 'KuzeliaForegroundStudy'
-        $out=Join-Path $env:REPORT_ROOT 'foreground-trials'
-        Get-ChildItem -LiteralPath $src -Filter 'trial-*' -Directory | ForEach-Object {
-          $dest=Join-Path $out $_.Name; $null=New-Item -Path $dest -ItemType Directory -Force
-          Get-ChildItem -LiteralPath $_.FullName -Filter '*.json' -File | Copy-Item -Destination $dest
-        }
-    - name: Retain raw observation timeline, coverage and quality evidence
+        $ErrorActionPreference='Stop'
+        & dotnet (Join-Path $env:DIAGNOSTIC_DIR 'ExitStudy.dll') run $env:OLD_APP $env:NEW_APP $env:EVIDENCE_DIR $env:OBSERVATION_ORDER
+        if($LASTEXITCODE -ne 0){throw 'The observation program exited abnormally'}
+        $r=Get-Content (Join-Path $env:EVIDENCE_DIR 'study.json') -Raw | ConvertFrom-Json
+        if($r.status -ne 'finished' -or $r.front.Count -lt 400 -or $r.samples.Count -lt 40 -or $r.scenarios.Count -lt 1){throw 'Incomplete close observations'}
+        foreach($s in $r.scenarios){Write-Output ("{0}: primaryPID={1} exitMs={2} stillAlive={3} duplicateAlive={4} duplicateDialog={5} duplicateExitedAfterOK={6}" -f $s.name,$s.primaryPid,$s.rootExitMs,$s.primaryAliveAfterWindow,$s.duplicateAliveAfterWindow,$s.duplicateWindowAfterClose,$s.duplicateExitedAfterOk)}
+    - name: Save raw system, process and foreground time series
       if: always()
       uses: actions/upload-artifact@v7
       with:
-        name: Kuzelia-Windows-Acceptance-${{ github.run_id }}
-        path: ${{ runner.temp }}/KuzeliaAcceptanceReports
-        retention-days: 3
+        name: Kuzelia-Idle-Close-${{ matrix.order }}-${{ github.run_id }}
+        path: ${{ runner.temp }}/regular-close-study/evidence/*.json
         if-no-files-found: warn
+        retention-days: 3
