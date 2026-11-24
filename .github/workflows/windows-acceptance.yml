@@ -1,204 +1,242 @@
 name: Windows acceptance
-on:
+'on':
   push:
-    branches: [validation-v0.20.24-c1]
-    paths: ['.github/workflows/windows-acceptance.yml']
-  workflow_dispatch:
+    branches:
+    - validation-v0.20.24-c1
+    paths:
+    - .github/workflows/windows-acceptance.yml
+  workflow_dispatch: {}
 permissions:
   contents: read
+  actions: read
 jobs:
-  live-windows:
+  windows:
     if: github.repository == 'taisukek13-tech/KuzeliaStudio-Updates' && github.event.repository.private == false && github.ref == 'refs/heads/validation-v0.20.24-c1'
     runs-on: windows-latest
-    timeout-minutes: 8
+    timeout-minutes: 26
     env:
-      APP_VERSION: '0.20.24'
+      RELEASE_TAG: validation-v0.20.24-c1
+      ZIP_SHA: 249ac3ba16e1c8a64599e48c2a62df4146819d8843be41cd359a0fbdb7f6c64d
       CORE_SHA: cbd04b705f7c7fbdddd7e38de28ef3a240590d8681825cae78f2ab6640e60cbe
+      APP_VERSION: 0.20.24
+      BASE_ZIP_SHA: 8da148f191f792de09f37b606ac00b55587059c012103f3c2d0e0f6fcb019d20
+      BASE_CORE_SHA: a7406c7f6fc0e5ecf1bc11ccb660f986bf240d6c8f07063ee4601245bca15b8c
+      PROBE_SHA: f443bc2e6d66c3d2c296bbc6da8407f36571b1c403290595fed0f4acc3833db5
     steps:
-      - name: Fetch and verify the released v23 runtime in a fresh hosted user
-        shell: pwsh
-        timeout-minutes: 3
-        run: |
-          $ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'
-          $rootDir=Join-Path $env:RUNNER_TEMP 'normal-public-update'
-          $reports=Join-Path $rootDir 'reports'
-          [IO.Directory]::CreateDirectory($reports)|Out-Null
-          $zip=Join-Path $rootDir 'v23.zip'
-          curl.exe -fLsS --retry 2 --max-time 100 -o $zip https://github.com/taisukek13-tech/KuzeliaStudio-Updates/releases/download/v0.20.23/KuzeliaStudio_Update_v0.20.23.zip
-          if($LASTEXITCODE -ne 0){throw 'Could not fetch released old runtime'}
-          $stream=[IO.File]::OpenRead($zip)
-          try{$hash=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($stream)).ToLowerInvariant()}finally{$stream.Dispose()}
-          if($hash -ne '8da148f191f792de09f37b606ac00b55587059c012103f3c2d0e0f6fcb019d20'){throw 'Public old runtime digest differs'}
-          $old=Join-Path $rootDir 'baseline'
-          [IO.Compression.ZipFile]::ExtractToDirectory($zip,$old)
-          $app=Join-Path $old 'KuzeliaStudio'
-          if(-not [IO.File]::Exists((Join-Path $app 'KuzeliaStudio.exe'))){throw 'Baseline app did not extract'}
-          Add-Content -LiteralPath $env:GITHUB_ENV -Value ('LIVE_OLD_ROOT='+$app) -Encoding utf8
-          Add-Content -LiteralPath $env:GITHUB_ENV -Value ('LIVE_PROOF='+$reports) -Encoding utf8
-          Write-Output ('Verified the released untouched baseline '+$hash)
-      - name: Use real v23 controls on the production Latest feed and verify the restarted app
-        shell: pwsh
-        timeout-minutes: 5
-        run: |
-          $source=@'
-          $ErrorActionPreference='Stop'
-          $env:PSModulePath=$PSHOME+'\Modules;'+$env:ProgramFiles+'\WindowsPowerShell\Modules'
-          Import-Module Microsoft.PowerShell.Management,Microsoft.PowerShell.Utility -ErrorAction Stop
-          $ProgressPreference='SilentlyContinue'
-          Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, WindowsBase
-          $uiReferences=@([Windows.Automation.AutomationElement].Assembly.Location,[Windows.Automation.ControlType].Assembly.Location,[Windows.DependencyObject].Assembly.Location) | Select-Object -Unique
-          # Desktop automation providers may wait for a modal window to close. Keep its caller independent.
-          Add-Type -ReferencedAssemblies $uiReferences -TypeDefinition @"
-          using System;
-          using System.Threading;
-          using System.Windows.Automation;
-          public static class UiClick {
-              public static volatile string LastError;
-              [System.Runtime.InteropServices.DllImport("user32.dll")]
-              public static extern IntPtr GetForegroundWindow();
-              public static void Invoke(AutomationElement element) {
-                  InvokePattern button=(InvokePattern)element.GetCurrentPattern(InvokePattern.Pattern);
-                  Thread thread=new Thread(delegate() { try { button.Invoke(); } catch (Exception ex) { LastError=ex.Message; } });
-                  thread.IsBackground=true; thread.SetApartmentState(ApartmentState.MTA); thread.Start();
-              }
-          }
-          "@
-          $root=[Windows.Automation.AutomationElement]::RootElement
-          $desc=[Windows.Automation.TreeScope]::Descendants
-          function Condition($property,$value){[Windows.Automation.PropertyCondition]::new($property,$value)}
-          function ByName($parent,[string]$name){
-              if($null -eq $parent){return}
-              $parent.FindFirst($desc,(Condition ([Windows.Automation.AutomationElement]::NameProperty) $name))
-          }
-          function NamedButton($parent,[string]$name){
-              if($null -eq $parent){return}
-              $nameTest=Condition ([Windows.Automation.AutomationElement]::NameProperty) $name
-              $typeTest=Condition ([Windows.Automation.AutomationElement]::ControlTypeProperty) ([Windows.Automation.ControlType]::Button)
-              $ee=$parent.FindFirst($desc,([Windows.Automation.AndCondition]::new($nameTest,$typeTest)))
-              if($ee -and $ee.Current.IsEnabled){$ee}
-          }
-          function ById($parent,[string]$id){
-              if($null -eq $parent){return}
-              $parent.FindFirst($desc,(Condition ([Windows.Automation.AutomationElement]::AutomationIdProperty) $id))
-          }
-          function ProcessWindow([int]$processId,[string]$prefix){
-              $wins=$root.FindAll([Windows.Automation.TreeScope]::Children,(Condition ([Windows.Automation.AutomationElement]::ProcessIdProperty) $processId))
-              foreach($w in $wins){if($w.Current.Name.StartsWith($prefix)){return $w}}
-              $handle=[UiClick]::GetForegroundWindow()
-              if($handle -ne [IntPtr]::Zero){
-                  $front=[Windows.Automation.AutomationElement]::FromHandle($handle)
-                  if($front.Current.ProcessId -eq $processId -and $front.Current.Name.StartsWith($prefix)){return $front}
-              }
-              $windowKind=Condition ([Windows.Automation.AutomationElement]::ControlTypeProperty) ([Windows.Automation.ControlType]::Window)
-              foreach($w in $wins){foreach($child in $w.FindAll($desc,$windowKind)){if($child.Current.Name.StartsWith($prefix)){return $child}}}
-          }
-          function WaitFor([string]$label,[scriptblock]$test,[int]$seconds=60){
-              $clock=[Diagnostics.Stopwatch]::StartNew()
-              while($clock.Elapsed.TotalSeconds -lt $seconds){
-                  try{$value=& $test;if($null -ne $value -and $value -ne $false){return $value}}catch [Windows.Automation.ElementNotAvailableException]{} catch [System.Runtime.InteropServices.COMException]{}
-                  Start-Sleep -Milliseconds 250
-              }
-              throw "Timed out waiting for $label. Automation provider: $([UiClick]::LastError)"
-          }
+    - name: Check signed runtime and diagnostics against successful run 47
+      id: prepare
+      shell: python
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        """Reuse the pinned results of the successful prepare job in acceptance run 47."""
+        import base64
+        import hashlib
+        import io
+        import json
+        import os
+        from pathlib import Path
+        import urllib.request
+        import zipfile
 
-          function FileDigest([string]$file){
-              $stream=[IO.File]::OpenRead($file);$h=[Security.Cryptography.SHA256]::Create()
-              try{return ([BitConverter]::ToString($h.ComputeHash($stream))).Replace('-','').ToLowerInvariant()}finally{$h.Dispose();$stream.Dispose()}
-          }
-          $target=$env:LIVE_OLD_ROOT;$targetExe=Join-Path $target 'KuzeliaStudio.exe'
-          $normal=Join-Path $env:LOCALAPPDATA 'KuzeliaStudio.Native';$parent=$null
-          $outfile=Join-Path $env:LIVE_PROOF 'live-update.json';$utf8=New-Object Text.UTF8Encoding($false)
-          $report=[ordered]@{passed=$false;fromVersion='0.20.23';toVersion='0.20.24';channel='';openedUpdateWindow=$false;checkedProductionFeed=$false;networkDownloadedCandidate=$false;restartButtonInvoked=$false;oldHelperObserved=$false;scope='Public v0.20.23, unmodified default Latest HTTPS, real visible buttons. Isolated hosted Windows VM, pinned public delta and signed inventory.';events=@()}
-          function Mark([string]$activity){
-              $report.events+=@{at=[DateTime]::UtcNow.ToString('o');activity=$activity}
-              Write-Output $activity
-              [IO.File]::WriteAllText($outfile,($report|ConvertTo-Json -Depth 8),$utf8)
-          }
-          try{
-              if((FileDigest (Join-Path $target 'Kuzelia.Core.dll')) -ne 'a7406c7f6fc0e5ecf1bc11ccb660f986bf240d6c8f07063ee4601245bca15b8c'){throw 'Old Core differs'}
-              $report.channel=([IO.File]::ReadAllText((Join-Path $target 'update-channel.json'))|ConvertFrom-Json).feedUrl
-              if($report.channel -ne 'https://github.com/taisukek13-tech/KuzeliaStudio-Updates/releases/latest/download/latest.json'){throw 'Unexpected built-in release channel'}
-              $null=[IO.Directory]::CreateDirectory($normal)
-              if([IO.File]::Exists((Join-Path $normal 'update-source.json')) -or [IO.Directory]::Exists((Join-Path $normal 'Updates\Downloads'))){throw 'The stock app must start without override or cached package'}
-              [IO.File]::WriteAllText((Join-Path $normal 'update-preferences.json'),'{"automatic":false}')
-              [IO.File]::WriteAllText((Join-Path $target 'my-recording.mp4'),'UPDATE-SOURCE-KEEP')
-              [IO.File]::WriteAllText((Join-Path $normal 'ci-update-user-data.txt'),'UPDATE-DATA-KEEP')
-              Mark 'Launch the untouched public v0.20.23 app'
-              $parent=Start-Process -FilePath $targetExe -WorkingDirectory $target -PassThru
-              $homeWindow=WaitFor 'old app window' {$parent.Refresh();if($parent.HasExited){throw 'Old app exited early'};if($parent.MainWindowHandle -ne 0){[Windows.Automation.AutomationElement]::FromHandle($parent.MainWindowHandle)}} 90
-              [UiClick]::Invoke((WaitFor 'home update button' {NamedButton $homeWindow 'アプリを更新'}))
-              $dialog=WaitFor 'update window' {ProcessWindow $parent.Id 'アプリを更新'}
-              $report.openedUpdateWindow=$true; Mark 'Opened the stock update dialog'
-              [UiClick]::Invoke((WaitFor 'check latest button' {NamedButton $dialog '最新版を確認・取得'}))
+        REPO = 'taisukek13-tech/KuzeliaStudio-Updates'
+        RUN = 45310245700
+        REPOSITORY_ID = 1440122794
+        COMMIT = '15a674c03625e9e6225558d3161df8191d9ae6d2'
+        BRANCH = 'validation-v0.20.24-c1'
+        PREPARE_JOB = 138163875249
+        RUNTIME = 'KuzeliaStudio_Update_v0.20.24.zip'
+        SETUP = 'KuzeliaStudio_Setup_v0.20.24.exe'
+        PROBE = 'qa-probes.zip'
+        META = 'Kuzelia-Prepared-Metadata-45310245700'
+        PINNED = {
+            RUNTIME: (14882533434, 558331806, '249ac3ba16e1c8a64599e48c2a62df4146819d8843be41cd359a0fbdb7f6c64d'),
+            SETUP: (14883530835, 518760140, 'eab7b5cd232f4e90c4af2761725cd659f904c72cb41901f8c639d78c21a04d70'),
+            PROBE: (14883151324, 61797, 'f443bc2e6d66c3d2c296bbc6da8407f36571b1c403290595fed0f4acc3833db5'),
+            META: (14883446078, 551, '5c7aaf0ce0a221c5009b37002ddd1b1e0d753ddb6072189d37839a32a766751e'),
+        }
+        # Exact public, 551-byte metadata archive from #47. Check its bytes against the
+        # digest currently returned for its original GitHub Actions artifact before use.
+        ORIGINAL_METADATA_ARCHIVE = 'UEsDBBQACAAIAGYReF0AAAAAAAAAAAAAAAAXAAAAcHJlcGFyZWQtYXJ0aWZhY3RzLmpzb25Nj8tqw0AMRff5CuN1F/PQaDRZltIfKO1eI2laQ+oEZxwIpf9ecKDJ+sA59/7shmFc1rlP3/b2xSHhuB/GAIUlVvZoXogRUikGJIExaAMPSL4oEcRq4EVjKuxa1ZobCoKOTw/a52u387gfUqIYPTnc4Nn6eroXjWuuSTTE0MCKE+AWMvockiim0ooDyUEq+OJ8I8FYNJMEzw40u/Eu/e95yug8uA3JcXk4KFUd1OxSy5JbVVXNFkktkLXIAVwqTgnJU0jClqkFrojgDJ1Uu+Wm+WJzPy7X1+mwJSnAbcf0OXNfF/uwZWqT6bgf+rLaBk/LdOFuL9z5/XQ4sm648eFsu98/UEsHCO4TpcwDAQAAkAEAAFBLAwQUAAgACAAvEXhdAAAAAAAAAAAAAAAAEwAAAGluc3RhbGxlci1idWlsZC5sb2cDAFBLBwgAAAAAAgAAAAAAAABQSwECLQMUAAgACABmEXhd7hOlzAMBAACQAQAAFwAAAAAAAAAAACAApIEAAAAAcHJlcGFyZWQtYXJ0aWZhY3RzLmpzb25QSwECLQMUAAgACAAvEXhdAAAAAAIAAAAAAAAAEwAAAAAAAAAAACAApIFIAQAAaW5zdGFsbGVyLWJ1aWxkLmxvZ1BLBQYAAAAAAgACAIYAAACLAQAAAAA='
+        CORE = 'cbd04b705f7c7fbdddd7e38de28ef3a240590d8681825cae78f2ab6640e60cbe'
 
-              Start-Sleep -Milliseconds 700
-              $ready=$null
-              for($attempt=1;$attempt -le 3;$attempt++){
-                  $resolved=WaitFor 'fresh production updater result' {
-                      if(NamedButton $dialog '更新して再起動'){return 'ready'}
-                      if((NamedButton $dialog '最新版を確認・取得') -and (ByName $dialog 'この配信先の最新版を使用しています。')){return 'old-feed'}
-                  } 50
-                  if($resolved -eq 'ready'){$ready=$true;break}
-                  if($attempt -lt 3){Start-Sleep -Seconds 4;[UiClick]::Invoke((WaitFor 'check again' {NamedButton $dialog '最新版を確認・取得'}));Start-Sleep -Milliseconds 700}
-              }
-              if(-not $ready){throw 'Released candidate was not offered by the default feed'}
-              $report.checkedProductionFeed=$true
-              $rootCache=Join-Path $normal 'Updates\Downloads'
-              $deltaHash='23e90644970ae1754c90b8cd50921d56aeedad723b00229a88f3ebebc80d548f'
-              $hits=@([IO.Directory]::GetFiles($rootCache,('update-'+$deltaHash+'.zip'),[IO.SearchOption]::AllDirectories))
-              if($hits.Count -ne 1){throw 'Expected the genuine public v23-to-v24 delta in the empty cache'}
-              $report.downloadedPackageSha256=FileDigest $hits[0]
-              $report.downloadedPackageBytes=([IO.FileInfo]::new($hits[0])).Length
-              $report.downloadedFeedSha256=FileDigest ([IO.Path]::Combine([IO.Path]::GetDirectoryName($hits[0]),'feed.json'))
-              if($report.downloadedPackageSha256 -ne $deltaHash -or $report.downloadedPackageBytes -ne 2004537 -or $report.downloadedFeedSha256 -ne '6d8c17a96180e7fef659cd922ec5ad1e868f87134734f0e424218092b23fa0d9'){throw 'Downloaded delta or signed public feed differs'}
-              $report.networkDownloadedCandidate=$true
-              Mark 'Stock app fetched and verified the released delta and feed'
-              [UiClick]::Invoke((WaitFor 'update and restart button' {NamedButton $dialog '更新して再起動'}))
-              $report.restartButtonInvoked=$true; Mark 'Restart requested in the old app window'
-              $restarted=WaitFor 'same installed app process restarts' {
-                  $parent.Refresh()
-                  foreach($p in Get-Process KuzeliaStudio -ErrorAction SilentlyContinue){
-                      if($p.MainModule.FileName -like "$normal\Updates\*\runner\KuzeliaStudio.exe"){$report.oldHelperObserved=$true}
-                      if($p.MainModule.FileName -eq $targetExe -and $p.Id -ne $parent.Id -and $parent.HasExited -and $p.MainWindowHandle -ne 0){return $p}
-                  }
-              } 90
-              $report.oldParentExited=$parent.HasExited;$report.restartedWindowPresent=$restarted.MainWindowHandle -ne 0
-              $report.restartedFileVersion=[Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $target 'KuzeliaStudio.dll')).FileVersion
-              if(-not $report.restartedFileVersion.StartsWith($env:APP_VERSION+'.') -or (FileDigest (Join-Path $target 'Kuzelia.Core.dll')) -ne $env:CORE_SHA){throw 'Restarted app version or Core differs'}
-              $envelope=Get-Content (Join-Path $target 'update-release.json') -Raw|ConvertFrom-Json
-              $manifest=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($envelope.payload))|ConvertFrom-Json
-              foreach($file in $manifest.files){if((FileDigest (Join-Path $target $file.path)) -ne $file.sha256){throw ('Installed file differs: '+$file.path)}}
-              $report.signedFilesVerified=$manifest.files.Count
-              if([IO.File]::ReadAllText((Join-Path $target 'my-recording.mp4')) -ne 'UPDATE-SOURCE-KEEP' -or [IO.File]::ReadAllText((Join-Path $normal 'ci-update-user-data.txt')) -ne 'UPDATE-DATA-KEEP'){throw 'User data changed'}
-              $report.unownedAndUserDataPreserved=$true
-              $runOnce=[Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\RunOnce')
-              try{if($runOnce -and $null -ne $runOnce.GetValue('KuzeliaStudioUpdate',$null)){throw 'Updater RunOnce was not cleared'}}finally{if($runOnce){$runOnce.Dispose()}}
-              $report.recoveryRegistrationCleared=$true;$report.passed=$true
+        def check(valid, message):
+            if not valid:
+                raise ValueError(message)
 
-              if($report.signedFilesVerified -ne 824){throw 'Wrong inventory size'}
-              Mark 'Verified updated window, 824 files and retained user fixtures'
-          }catch{
-              $report.passed=$false;$report.error=$_.Exception.Message
-              throw
-          }finally{
-              [IO.File]::WriteAllText($outfile,($report|ConvertTo-Json -Depth 8),$utf8)
-              if($targetExe){foreach($p in [Diagnostics.Process]::GetProcessesByName('KuzeliaStudio')){if($p.MainModule.FileName -eq $targetExe){if(-not $p.CloseMainWindow() -or -not $p.WaitForExit(6000)){$p.Kill()}}}}
-          }
-          '@
-          $driverPath=Join-Path $env:RUNNER_TEMP 'kuzelia-public-update.ps1'
-          [IO.File]::WriteAllText($driverPath,$source,[Text.UTF8Encoding]::new($true))
-          $legacyExe=Join-Path $env:windir 'System32\WindowsPowerShell\v1.0\powershell.exe'
-          $driver=Start-Process -FilePath $legacyExe -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-STA','-ExecutionPolicy','Bypass','-File',('"'+$driverPath+'"')) -NoNewWindow -PassThru
-          if(-not $driver.WaitForExit(215000)){Stop-Process -Id $driver.Id -Force;throw 'Post-publication Windows UI exceeded 215 seconds; see recorded events.'}
-          if($driver.ExitCode -ne 0){throw 'Public in-app update failed'}
-          $proof=Get-Content (Join-Path $env:LIVE_PROOF 'live-update.json') -Raw | ConvertFrom-Json
-          if(-not $proof.passed -or -not $proof.networkDownloadedCandidate -or -not $proof.restartButtonInvoked -or -not $proof.restartedWindowPresent -or $proof.signedFilesVerified -ne 824){throw 'Incomplete public update proof'}
-          Write-Output ($proof | ConvertTo-Json -Depth 8)
-      - name: Retain the public in-app update receipt
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: Kuzelia-Live-Update-${{ github.run_id }}
-          path: ${{ runner.temp }}/normal-public-update/reports
-          if-no-files-found: warn
-          retention-days: 3
+        def get(endpoint):
+            req = urllib.request.Request('https://api.github.com/repos/'+REPO+'/actions/'+endpoint,
+                headers={'User-Agent':'Kuzelia-Previous-Prepare-Verification','Accept':'application/vnd.github+json','Cache-Control':'no-cache'})
+            with urllib.request.urlopen(req, timeout=35) as response:
+                return json.load(response)
+
+        def main():
+            run = get(f'runs/{RUN}')
+            check(run['id']==RUN and run['run_number']==47 and run['head_sha']==COMMIT and run['head_branch']==BRANCH
+                  and run['repository']['id']==REPOSITORY_ID and run['head_repository']['id']==REPOSITORY_ID
+                  and run['repository']['full_name']==REPO and run['path']=='.github/workflows/windows-acceptance.yml', 'Unexpected original workflow run')
+            jobs = get(f'runs/{RUN}/jobs?per_page=100')['jobs']
+            prepare = next(j for j in jobs if j['id']==PREPARE_JOB)
+            check(prepare['name']=='prepare' and prepare['status']=='completed' and prepare['conclusion']=='success'
+                  and prepare['run_id']==RUN and prepare['head_sha']==COMMIT, 'Original prepare job did not pass')
+            original = get(f'runs/{RUN}/artifacts?per_page=100')['artifacts']
+            records = {}
+            for name,(ident,size,digest) in PINNED.items():
+                matches = [a for a in original if a['id']==ident and a['name']==name]
+                check(len(matches)==1, 'Missing pinned original artifact: '+name)
+                a = matches[0]
+                w = a['workflow_run']
+                check(not a['expired'] and a['size_in_bytes']==size and a['digest']=='sha256:'+digest
+                      and w['repository_id']==REPOSITORY_ID and w['head_repository_id']==REPOSITORY_ID
+                      and w['id']==RUN and w['head_sha']==COMMIT and w['head_branch']==BRANCH,
+                      'Original artifact identity or bytes differ: '+name)
+                records[name] = {'id':ident,'bytes':size,'sha256':digest}
+            blob = base64.b64decode(ORIGINAL_METADATA_ARCHIVE, validate=True)
+            check(len(blob)==records[META]['bytes'] and hashlib.sha256(blob).hexdigest()==records[META]['sha256'], 'Prepare record disagrees with original artifact')
+            with zipfile.ZipFile(io.BytesIO(blob)) as z:
+                check(set(z.namelist())=={'prepared-artifacts.json','installer-build.log'},'Unexpected original preparation metadata')
+                report=json.loads(z.read('prepared-artifacts.json'))
+            check(report['setupSha256']==records[SETUP]['sha256'] and report['setupBytes']==records[SETUP]['bytes']
+                  and report['runtimeSha256']==records[RUNTIME]['sha256'] and report['runtimeBytes']==records[RUNTIME]['bytes']
+                  and report['coreSha256']==CORE and report['signatureVerified'] is True
+                  and report['privateDataUploaded'] is False and report['inventoryFiles']==824, 'Wrong original preparation evidence')
+            report['reusedPreparation']={'sourceRun':RUN,'sourceRunNumber':47,'sourcePrepareJob':PREPARE_JOB,'sourceCommit':COMMIT,
+                'sourceRunStatus':run['status'],'sourceRunConclusion':run['conclusion'],'sourcePrepareConclusion':prepare['conclusion'],'sourceArtifacts':records}
+            dist=Path(os.environ['RUNNER_TEMP'])/'KuzeliaPrepared/dist'
+            dist.mkdir(exist_ok=True,parents=True)
+            (dist/'prepared-artifacts.json').write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
+            with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as out:
+                out.write('setup_sha='+report['setupSha256']+'\n')
+            print('Verified original prepare job, artifact IDs and digests for run',RUN)
+
+        if __name__=='__main__':
+            main()
+    - uses: actions/download-artifact@v8
+      with:
+        name: KuzeliaStudio_Update_v0.20.24.zip
+        path: ${{ runner.temp }}/KuzeliaAcceptanceIncoming
+        skip-decompress: true
+        run-id: 45310245700
+        github-token: ${{ github.token }}
+    - uses: actions/download-artifact@v8
+      with:
+        name: qa-probes.zip
+        path: ${{ runner.temp }}/KuzeliaAcceptanceIncoming
+        skip-decompress: true
+        run-id: 45310245700
+        github-token: ${{ github.token }}
+    - name: Verify and extract the exact signed candidate
+      id: runtime
+      shell: pwsh
+      run: |
+        $ErrorActionPreference='Stop'
+        if($env:RELEASE_TAG -notmatch '^[A-Za-z0-9._-]+$' -or $env:APP_VERSION -notmatch '^\d+\.\d+\.\d+$' -or $env:ZIP_SHA -notmatch '^[a-f0-9]{64}$' -or $env:CORE_SHA -notmatch '^[a-f0-9]{64}$'){throw 'Invalid validation inputs'}
+        $base=Join-Path $env:RUNNER_TEMP 'KuzeliaAcceptance'
+        $reports=Join-Path $env:RUNNER_TEMP 'KuzeliaAcceptanceReports'
+        New-Item -ItemType Directory -Path $base,$reports -Force|Out-Null
+        $zip=Join-Path $env:RUNNER_TEMP 'KuzeliaAcceptanceIncoming\KuzeliaStudio_Update_v0.20.24.zip'
+        if((Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:ZIP_SHA){throw 'Runtime ZIP digest mismatch'}
+        [IO.Compression.ZipFile]::ExtractToDirectory($zip, $base)
+        $appRoot=Join-Path $base 'KuzeliaStudio'
+        if((Get-FileHash (Join-Path $appRoot 'Kuzelia.Core.dll') -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:CORE_SHA){throw 'Core digest mismatch'}
+        'APP_ROOT='+$appRoot|Out-File $env:GITHUB_ENV -Append -Encoding utf8
+        'REPORT_ROOT='+$reports|Out-File $env:GITHUB_ENV -Append -Encoding utf8
+        $hardware=@{os=[Environment]::OSVersion.VersionString;cpu=@(Get-CimInstance Win32_Processor|Select-Object Name,NumberOfCores,NumberOfLogicalProcessors);memoryBytes=(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory;graphics=@(Get-CimInstance Win32_VideoController|Select-Object Name,DriverVersion);authenticode=(Get-AuthenticodeSignature (Join-Path $appRoot 'KuzeliaStudio.exe')).Status.ToString();limits='Standard hosted Windows VM, not the user PC or RTX benchmark.'}
+        $hardware|ConvertTo-Json -Depth 8|Set-Content (Join-Path $reports 'hardware.json') -Encoding utf8
+    - name: Fetch and pin the official previous runtime once
+      id: baseline
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $baseFolder = Join-Path $env:RUNNER_TEMP 'KuzeliaOfficialBaseline'
+        $null = New-Item -ItemType Directory -Path $baseFolder
+        $zip = Join-Path $baseFolder 'official-v23.zip'
+        & curl.exe --fail --silent --show-error --location --retry 3 --max-time 240 --output $zip 'https://github.com/taisukek13-tech/KuzeliaStudio-Updates/releases/download/v0.20.23/KuzeliaStudio_Update_v0.20.23.zip'
+        if ($LASTEXITCODE -ne 0) { throw 'Could not download the official v0.20.23 runtime' }
+        if ((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash -ne $env:BASE_ZIP_SHA) { throw 'Official baseline archive differs' }
+        [IO.Compression.ZipFile]::ExtractToDirectory($zip, $baseFolder)
+        $baseRoot = Join-Path $baseFolder 'KuzeliaStudio'
+        if ((Get-FileHash (Join-Path $baseRoot 'Kuzelia.Core.dll')).Hash -ne $env:BASE_CORE_SHA) { throw 'Official baseline Core differs' }
+        $baseVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $baseRoot 'KuzeliaStudio.dll')).FileVersion
+        if ($baseVersion -ne '0.20.23.0') { throw "Unexpected baseline version $baseVersion" }
+        "BASE_ROOT=$baseRoot" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+    - name: Use the .NET 10 SDK for the independent portable test probes
+      uses: actions/setup-dotnet@v5
+      with:
+        dotnet-version: 10.0.403
+    - name: Stage pinned binary-only tests outside both applications
+      id: probes
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $bundle = Join-Path $env:RUNNER_TEMP 'KuzeliaAcceptanceIncoming/qa-probes.zip'
+        if ((Get-FileHash $bundle).Hash -ne $env:PROBE_SHA) { throw 'Wrong portable diagnostics' }
+        $bin = Join-Path $env:RUNNER_TEMP 'KuzeliaPortableQA'
+        [IO.Compression.ZipFile]::ExtractToDirectory($bundle,$bin)
+        Copy-Item -LiteralPath (Join-Path $env:BASE_ROOT 'Kuzelia.Core.dll') -Destination $bin
+        "QA_BIN=$bin" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+        $compressed = Join-Path $env:RUNNER_TEMP 'qa-foreground-r4.gz'
+        $url = 'https://raw.githubusercontent.com/'+$env:GITHUB_REPOSITORY+'/'+$env:GITHUB_SHA+'/.github/workflows/qa-foreground-r4.gz'
+        & curl.exe -fLsS --retry 2 --max-time 40 -o $compressed $url
+        if ($LASTEXITCODE -ne 0 -or (Get-FileHash -LiteralPath $compressed).Hash -ne $env:PROBE_R4_GZ_SHA) { throw 'Incorrect foreground test revision' }
+        $stream=[IO.File]::OpenRead($compressed)
+        $gzip=[IO.Compression.GZipStream]::new($stream,[IO.Compression.CompressionMode]::Decompress)
+        $dst=Join-Path $bin 'ContentionProbe.dll'
+        $output=[IO.File]::Create($dst)
+        try { $gzip.CopyTo($output) } finally { $output.Dispose(); $gzip.Dispose(); $stream.Dispose() }
+        if ((Get-FileHash -LiteralPath $dst).Hash -ne $env:PROBE_R4_DLL_SHA) { throw 'Incorrect expanded diagnostic' }
+      env:
+        PROBE_R4_GZ_SHA: 92736b0bd4e7bbe2753188172ccda47601e1b9816cec454b02b540738fcafab4
+        PROBE_R4_DLL_SHA: 70d7ab813922eee1e1f48178a93c20e0c191107fcd5f92ab78d87fa3e6f6ea30
+    - name: Start the foreground load after the packaged Whisper process has loaded the model
+      id: contention
+      timeout-minutes: 12
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $folder = Join-Path $env:RUNNER_TEMP 'KuzeliaForegroundStudy'
+        $probe = Join-Path $env:QA_BIN 'ContentionProbe.dll'
+        & dotnet $probe driver $env:BASE_ROOT $env:APP_ROOT $folder 6 3 active-speech
+        if ($LASTEXITCODE -ne 0) { throw "Independent contention probe failed ($LASTEXITCODE)" }
+        $source = Join-Path $folder 'contention.json'
+        Copy-Item -LiteralPath $source -Destination (Join-Path $env:REPORT_ROOT 'foreground-study.json')
+        $result = Get-Content -LiteralPath $source -Raw | ConvertFrom-Json
+        if (!$result.windows -or $result.runs.Count -ne 9 -or $result.quality.transcripts.Count -ne 1) { throw 'Incomplete contention or media equivalence results' }
+        foreach ($row in $result.runs) {
+            $f = $row.foreground
+            Write-Output ("{0}/{1} win32={2}; received={3}; frames={4}; inherited={5}; effective={6}; focus={7}; late={8}" -f $row.round,$row.scenario,$f.windowsMessageQueue,$f.delivered,$f.frames,$f.inheritedPriority,$f.priority,$f.focusFraction,$f.missed)
+            if (!$f.windowsMessageQueue) { throw "Missing Win32 queue in $($row.scenario)" }
+            if ($f.delivered -ne 360) { throw "Received $($f.delivered) ticks under $($row.scenario), expected 360" }
+            if ($f.frames -le 0) { throw "No independent transforms under $($row.scenario)" }
+            if ($f.priority -ne 'Normal') { throw "Expected Normal, observed $($f.priority) ($($row.scenario))" }
+            if ($row.operation -eq 'idle') { continue }
+            $expected = if ($row.version -eq 'before') { $env:BASE_CORE_SHA } else { $env:CORE_SHA }
+            if ($row.product.coreHash -ne $expected) { throw "Different runtime in $($row.scenario)" }
+            if ($row.product.durationsMs.Count -lt 1 -or $row.native.samples.Count -lt 2 -or $row.native.workers.Count -lt 1) { throw "Missing native worker, timings or CPU/memory measurements in $($row.scenario)" }
+            if ($row.operation -eq 'speech' -and $row.product.backends.Count -lt 1) { throw 'Missing real speech inference' }
+        }
+
+        foreach ($row in $result.runs) {
+            if ($row.operation -eq 'idle') { continue }
+            $work=$row.product
+            Write-Output ("{0}/{1} startedMs={2:N2}; firstNativeSeconds={3:N2}; nativeOverlapSeconds={4:N2} / {5}; CPU samples={6}" -f $row.round,$row.scenario,$work.startDelayMs,$work.firstWorkerSeconds,$work.nativeOverlapSeconds,$result.duration,$work.cpuSamples)
+            if ($work.startDelayMs -gt 500 -or $work.startDelayMs -lt 0 -or $work.firstWorkerSeconds -lt 0 -or $work.firstWorkerSeconds -gt 0.1 -or $work.nativeOverlapSeconds -lt 5.5 -or $work.cpuSamples -lt 3 -or $work.nativePid -le 0 -or $work.cpuAtFenceMs -lt 500 -or $work.warmWorkingSetBytes -lt 134217728 -or $work.processPriority -ne 'Normal') { throw "Insufficient synchronized native workload or samples for $($row.scenario)" }
+        }
+    - name: Keep per-trial measurements when an assertion fails
+      shell: pwsh
+      if: ${{ failure() && steps.contention.outcome == 'failure' }}
+      run: |
+        $src=Join-Path $env:RUNNER_TEMP 'KuzeliaForegroundStudy'
+        $out=Join-Path $env:REPORT_ROOT 'foreground-trials'
+        Get-ChildItem -LiteralPath $src -Filter 'trial-*' -Directory | ForEach-Object {
+          $dest=Join-Path $out $_.Name; $null=New-Item -Path $dest -ItemType Directory -Force
+          Get-ChildItem -LiteralPath $_.FullName -Filter '*.json' -File | Copy-Item -Destination $dest
+        }
+    - name: Retain raw observation timeline, coverage and quality evidence
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: Kuzelia-Windows-Acceptance-${{ github.run_id }}
+        path: ${{ runner.temp }}/KuzeliaAcceptanceReports
+        retention-days: 3
+        if-no-files-found: warn
